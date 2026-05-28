@@ -1003,6 +1003,35 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 		if (clearErrors || glDebugErrors)
 			glClearErrors("GR", __func__, glDebugErrors);
 
+#if defined(__APPLE__) && !defined(HEADLESS)
+		// Headless verification capture. Draw() has already rendered into
+		// the default FBO by the time SwapBuffers() runs, so we can read it
+		// back here even when the actual present/swap is suppressed
+		// (allowSwapBuffers==false, e.g. an unfocused/background launch).
+		// Writes <prefix>.NNNN.raw (uint32 w,h header + w*h*4 BGRA, bottom-up).
+		if (const char* cp = getenv("SPRING_FRAME_CAPTURE")) {
+			if (g_eglDisplay != EGL_NO_DISPLAY && g_eglSurface != EGL_NO_SURFACE && g_pbufW > 0 && g_pbufH > 0) {
+				static int s_cap = 0;
+				if ((s_cap % 30) == 0 && s_cap < 1800) {
+					const size_t need = static_cast<size_t>(g_pbufW) * g_pbufH * 4;
+					if (g_presentBuf.size() < need)
+						g_presentBuf.resize(need);
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+					glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, g_presentBuf.data());
+					char path[1024];
+					snprintf(path, sizeof(path), "%s.%04d.raw", cp, s_cap);
+					if (FILE* f = fopen(path, "wb")) {
+						const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
+						fwrite(hdr, sizeof(hdr), 1, f);
+						fwrite(g_presentBuf.data(), 1, need, f);
+						fclose(f);
+					}
+				}
+				s_cap++;
+			}
+		}
+#endif
+
 		if (!allowSwapBuffers && !forceSwapBuffers)
 			return;
 
