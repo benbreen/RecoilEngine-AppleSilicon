@@ -66,13 +66,26 @@ static void* GetNSViewFromSDLWindow(SDL_Window* window) {
 }
 
 static bool InitEGLContext(SDL_Window* window, int major, int minor) {
+    fprintf(stderr, "[EGL] eglGetDisplay(EGL_DEFAULT_DISPLAY)...\n");
     g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    fprintf(stderr, "[EGL] eglGetDisplay -> %p (lastError=0x%x)\n", (void*)g_eglDisplay, eglGetError());
     if (g_eglDisplay == EGL_NO_DISPLAY) return false;
 
-    EGLint eglMajor, eglMinor;
-    if (!eglInitialize(g_eglDisplay, &eglMajor, &eglMinor)) return false;
+    EGLint eglMajor = 0, eglMinor = 0;
+    EGLBoolean initOk = eglInitialize(g_eglDisplay, &eglMajor, &eglMinor);
+    fprintf(stderr, "[EGL] eglInitialize -> %d (version %d.%d, lastError=0x%x)\n",
+            (int)initOk, eglMajor, eglMinor, eglGetError());
+    if (!initOk) return false;
 
-    eglBindAPI(EGL_OPENGL_API);
+    const char* vendor   = eglQueryString(g_eglDisplay, EGL_VENDOR);
+    const char* version  = eglQueryString(g_eglDisplay, EGL_VERSION);
+    const char* clientApis = eglQueryString(g_eglDisplay, EGL_CLIENT_APIS);
+    fprintf(stderr, "[EGL] vendor=%s version=%s clientApis=%s\n",
+            vendor ? vendor : "?", version ? version : "?", clientApis ? clientApis : "?");
+
+    EGLBoolean bindOk = eglBindAPI(EGL_OPENGL_API);
+    fprintf(stderr, "[EGL] eglBindAPI(EGL_OPENGL_API) -> %d (lastError=0x%x)\n",
+            (int)bindOk, eglGetError());
 
     EGLint configAttribs[] = {
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
@@ -82,8 +95,11 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
         EGL_NONE
     };
     EGLConfig eglConfig;
-    EGLint numConfigs;
-    if (!eglChooseConfig(g_eglDisplay, configAttribs, &eglConfig, 1, &numConfigs) || numConfigs == 0)
+    EGLint numConfigs = 0;
+    EGLBoolean cfgOk = eglChooseConfig(g_eglDisplay, configAttribs, &eglConfig, 1, &numConfigs);
+    fprintf(stderr, "[EGL] eglChooseConfig -> %d (numConfigs=%d, lastError=0x%x)\n",
+            (int)cfgOk, numConfigs, eglGetError());
+    if (!cfgOk || numConfigs == 0)
         return false;
 
     void* nativeView = GetNSViewFromSDLWindow(window);
@@ -103,9 +119,13 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
         EGL_NONE
     };
     g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, contextAttribs);
+    fprintf(stderr, "[EGL] eglCreateContext(major=%d, minor=%d) -> %p (lastError=0x%x)\n",
+            major, minor, (void*)g_eglContext, eglGetError());
     if (g_eglContext == EGL_NO_CONTEXT) return false;
 
-    if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
+    EGLBoolean mcOk = eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
+    fprintf(stderr, "[EGL] eglMakeCurrent -> %d (lastError=0x%x)\n", (int)mcOk, eglGetError());
+    if (!mcOk)
         return false;
 
     return true;
