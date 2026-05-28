@@ -25,7 +25,15 @@
 #include "System/Threading/ThreadPool.h"
 #include "System/ContainerUtil.h"
 #include "System/LoadLock.h"
+// assimp public headers modify #pragma pack across includes (clang -Wpragma-pack)
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpragma-pack"
+#endif
 #include "lib/assimp/include/assimp/Importer.hpp"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 #include "System/Misc/TracyDefs.h"
 
