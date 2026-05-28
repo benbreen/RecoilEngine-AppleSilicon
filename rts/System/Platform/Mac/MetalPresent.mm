@@ -79,8 +79,10 @@ void MacMetalPresent_PresentBGRA(int w, int h, const void* pixels, bool flipY)
 				 bytesPerRow:rowBytes];
 
 	id<CAMetalDrawable> drawable = [g_layer nextDrawable];
-	if (drawable == nil)
+	if (drawable == nil) {
+		fprintf(stderr, "[MetalPresent] nextDrawable returned nil — frame not presented\n");
 		return;
+	}
 
 	id<MTLCommandBuffer> cb = [g_queue commandBuffer];
 	id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];

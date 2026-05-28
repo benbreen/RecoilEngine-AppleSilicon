@@ -19,6 +19,9 @@ static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
 static EGLContext g_eglContext = EGL_NO_CONTEXT;
 static EGLSurface g_eglSurface = EGL_NO_SURFACE;
 static void*      g_metalLayer = nullptr; // CAMetalLayer attached to the window's NSView
+static int        g_pbufW = 1280;         // pbuffer (default framebuffer) dimensions
+static int        g_pbufH = 720;
+static std::vector<unsigned char> g_presentBuf; // reused glReadPixels staging buffer
 
 static void* GetNSViewFromSDLWindow(SDL_Window* window) {
     SDL_SysWMinfo info;
@@ -67,6 +70,24 @@ static void* GetNSViewFromSDLWindow(SDL_Window* window) {
     return (void*)view;
 }
 
+// Returns the SDL window's NSWindow.backingScaleFactor (1.0 on non-Retina,
+// 2.0 on standard Retina). Used to size the pbuffer (= GL default framebuffer)
+// in physical pixels so full-resolution rendering isn't clipped.
+static double GetBackingScaleFactor(SDL_Window* window) {
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    if (!SDL_GetWindowWMInfo(window, &wmInfo))
+        return 1.0;
+
+    id nswindow = (id)wmInfo.info.cocoa.window;
+    if (!nswindow)
+        return 1.0;
+
+    double (*getScale)(id, SEL) = (double(*)(id, SEL))objc_msgSend;
+    double scale = getScale(nswindow, sel_registerName("backingScaleFactor"));
+    return (scale > 0.0) ? scale : 1.0;
+}
+
 static bool InitEGLContext(SDL_Window* window, int major, int minor) {
     fprintf(stderr, "[EGL] eglGetDisplay(EGL_DEFAULT_DISPLAY)...\n");
     g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -109,13 +130,31 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
 
     void* nativeView = GetNSViewFromSDLWindow(window);
     g_metalLayer = nativeView; // CAMetalLayer for the manual present path
+
+    // Size the pbuffer (= the GL default framebuffer) to the window's *backing*
+    // pixel size, so the engine's full-resolution (Retina) rendering isn't
+    // clipped. SDL_GetWindowSizeInPixels returns logical points on this
+    // surfaceless/borderless setup, so compute backing pixels explicitly via
+    // the window size in points * backingScaleFactor. The manual Metal present
+    // reads this whole buffer back each SwapBuffers.
+    int winW = 0, winH = 0;
+    SDL_GetWindowSize(window, &winW, &winH);
+    const double bsf = GetBackingScaleFactor(window);
+    int pxW = (int)(winW * bsf + 0.5);
+    int pxH = (int)(winH * bsf + 0.5);
+    if (pxW <= 0 || pxH <= 0) { pxW = 1280; pxH = 720; }
+    g_pbufW = pxW;
+    g_pbufH = pxH;
+    fprintf(stderr, "[EGL] window %dx%d pts * %.2f scale -> pbuffer %dx%d px\n", winW, winH, bsf, pxW, pxH);
+
     if (nativeView) {
         g_eglSurface = eglCreateWindowSurface(g_eglDisplay, eglConfig, (EGLNativeWindowType)nativeView, NULL);
     }
     if (g_eglSurface == EGL_NO_SURFACE) {
-        EGLint pbAttribs[] = { EGL_WIDTH, 1280, EGL_HEIGHT, 720, EGL_NONE };
+        EGLint pbAttribs[] = { EGL_WIDTH, g_pbufW, EGL_HEIGHT, g_pbufH, EGL_NONE };
         g_eglSurface = eglCreatePbufferSurface(g_eglDisplay, eglConfig, pbAttribs);
         if (g_eglSurface == EGL_NO_SURFACE) return false;
+        fprintf(stderr, "[EGL] FALLBACK to PbufferSurface %dx%d surface=%p\n", g_pbufW, g_pbufH, (void*)g_eglSurface);
     }
 
     // Dump what the chosen config actually supports.
@@ -174,6 +213,10 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
     } else {
         fprintf(stderr, "[EGL/GL] eglGetProcAddress(glGetString) returned NULL\n");
     }
+
+    // Set up the manual present path now that the layer + context exist.
+    if (!MacMetalPresent_Init(g_metalLayer))
+        fprintf(stderr, "[EGL] MacMetalPresent_Init failed; window will not show frames\n");
 
     return true;
 }
@@ -815,6 +858,10 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 			glReadPixels(0, 0, rw, rh, GL_BGRA, GL_UNSIGNED_BYTE, buf.data());
 			MacMetalPresent_PresentBGRA(rw, rh, buf.data(), false); // solid color: no flip needed
 			fprintf(stderr, "[PRESENT_TEST] frame %d color=%s\n", i, odd ? "RED" : "BLUE");
+			// Pump the Cocoa run loop so CoreAnimation actually composites each
+			// presented frame (otherwise only the final frame shows on screen).
+			SDL_PumpEvents();
+			SDL_Event ev; while (SDL_PollEvent(&ev)) {}
 			SDL_Delay(500);
 		}
 		fprintf(stderr, "[PRESENT_TEST] done\n");
@@ -944,9 +991,36 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 		
 #if defined(__APPLE__) && !defined(HEADLESS)
 		if (g_eglDisplay != EGL_NO_DISPLAY && g_eglSurface != EGL_NO_SURFACE) {
-			glFlush();
-			// eglSwapBuffers deadlocks on macOS (dispatch_sync to main thread)
-			// Kopper/Zink renders directly to CAMetalLayer, glFlush is sufficient
+			// eglSwapBuffers on the (surfaceless) pbuffer presents nowhere, so
+			// read the rendered default framebuffer back and blit it onto the
+			// window's CAMetalLayer via Metal. glReadPixels also syncs, so the
+			// frame is complete. flipY: GL readback is bottom-up.
+			const size_t need = static_cast<size_t>(g_pbufW) * g_pbufH * 4;
+			if (g_presentBuf.size() < need)
+				g_presentBuf.resize(need);
+			glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, g_presentBuf.data());
+			// Debug: dump rendered frames to raw files for inspection without
+			// screen capture. SPRING_MAC_DUMP_FRAME=<prefix>; writes <prefix>.NNN.raw
+			// (8-byte header: uint32 w,h little-endian; then w*h*4 BGRA, bottom-up).
+			if (const char* dp = getenv("SPRING_MAC_DUMP_FRAME")) {
+				static int s_df = 0;
+				if (s_df < 80 && (s_df % 6) == 0) {
+					char path[1024];
+					snprintf(path, sizeof(path), "%s.%03d.raw", dp, s_df);
+					if (FILE* f = fopen(path, "wb")) {
+						const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
+						fwrite(hdr, sizeof(hdr), 1, f);
+						fwrite(g_presentBuf.data(), 1, (size_t)g_pbufW * g_pbufH * 4, f);
+						fclose(f);
+					}
+				}
+				s_df++;
+			}
+			MacMetalPresent_PresentBGRA(g_pbufW, g_pbufH, g_presentBuf.data(), true);
+			// We replaced SDL_GL_SwapWindow (which serviced the Cocoa run loop),
+			// so pump events here to let CoreAnimation actually composite the
+			// presented drawable — including during the single-threaded load.
+			SDL_PumpEvents();
 		} else
 #endif
 		SDL_GL_SwapWindow(sdlWindow);
