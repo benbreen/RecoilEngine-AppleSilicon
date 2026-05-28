@@ -166,13 +166,45 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
         fprintf(stderr, "[EGL] Config: renderable=0x%x surfaceType=0x%x conformant=0x%x (OPENGL_BIT=0x%x)\n",
                 cfgRenderable, cfgSurface, cfgConformant, EGL_OPENGL_BIT);
     }
-    // Walk down from the highest core-profile version Zink might support.
-    // KosmicKrisp reports Vulkan 1.3 / MoltenVK-parity, so 4.6 -> 3.3 should
-    // cover Zink's GL exposure. We pick the first version eglCreateContext
-    // accepts. Asking for compatibility profile or omitting it both fail.
+    // Prefer a COMPATIBILITY-profile context. Mesa 26.2 Zink grants GL 4.6
+    // compat on KosmicKrisp (verified: "4.6 (Compatibility Profile)"), which is
+    // a strict superset of core: it keeps all modern GL4 features AND the legacy
+    // paths BAR pervasively relies on (immediate mode / glBegin, display lists,
+    // the fixed-function matrix stack, and '#version ... compatibility' GLSL).
+    // This eliminates an otherwise huge per-shader core-profile port. We fall
+    // back to a CORE context if compat is refused, or if SPRING_MAC_GL_CORE is
+    // set to force the old behavior.
+    //
+    // Note: geometry shaders are unavailable regardless of profile because
+    // KosmicKrisp's Vulkan reports geometryShader=false (Metal has no GS stage);
+    // that is a separate problem from the GL profile.
     const int2 tryVersions[] = {
         {4,6},{4,5},{4,4},{4,3},{4,2},{4,1},{4,0},{3,3},{3,2}
     };
+    const bool forceCore = (getenv("SPRING_MAC_GL_CORE") != nullptr);
+
+    if (!forceCore) {
+        EGLint compatAttribs[] = {
+            EGL_CONTEXT_MAJOR_VERSION, 0,
+            EGL_CONTEXT_MINOR_VERSION, 0,
+            EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+            EGL_NONE
+        };
+        for (const auto& v : tryVersions) {
+            compatAttribs[1] = v.x;
+            compatAttribs[3] = v.y;
+            g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, compatAttribs);
+            EGLint err = eglGetError();
+            fprintf(stderr, "[EGL] eglCreateContext(%d.%d COMPAT) -> %p (lastError=0x%x)\n",
+                    v.x, v.y, (void*)g_eglContext, err);
+            if (g_eglContext != EGL_NO_CONTEXT)
+                break;
+        }
+        fprintf(stderr, g_eglContext != EGL_NO_CONTEXT
+            ? "[EGL] COMPAT profile context obtained.\n"
+            : "[EGL] COMPAT profile unavailable; falling back to CORE.\n");
+    }
+
     EGLint contextAttribs[] = {
         EGL_CONTEXT_MAJOR_VERSION, 0,
         EGL_CONTEXT_MINOR_VERSION, 0,
@@ -180,6 +212,8 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
         EGL_NONE
     };
     for (const auto& v : tryVersions) {
+        if (g_eglContext != EGL_NO_CONTEXT)
+            break;
         contextAttribs[1] = v.x;
         contextAttribs[3] = v.y;
         g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, contextAttribs);
