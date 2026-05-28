@@ -13,10 +13,12 @@
 #include <SDL_syswm.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include "System/Platform/Mac/MetalPresent.h"
 
 static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
 static EGLContext g_eglContext = EGL_NO_CONTEXT;
 static EGLSurface g_eglSurface = EGL_NO_SURFACE;
+static void*      g_metalLayer = nullptr; // CAMetalLayer attached to the window's NSView
 
 static void* GetNSViewFromSDLWindow(SDL_Window* window) {
     SDL_SysWMinfo info;
@@ -106,6 +108,7 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
         return false;
 
     void* nativeView = GetNSViewFromSDLWindow(window);
+    g_metalLayer = nativeView; // CAMetalLayer for the manual present path
     if (nativeView) {
         g_eglSurface = eglCreateWindowSurface(g_eglDisplay, eglConfig, (EGLNativeWindowType)nativeView, NULL);
     }
@@ -789,6 +792,33 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 #ifndef __APPLE__
 	GLX::Load(sdlWindow);
 #endif
+#endif
+
+#if defined(__APPLE__) && !defined(HEADLESS)
+	// Tracer bullet: when SPRING_MAC_PRESENT_TEST is set, flash the window
+	// red/blue for ~8s by rendering a clear and presenting it to the window's
+	// CAMetalLayer via the manual Metal present path (glReadPixels -> MTLTexture
+	// -> blit to drawable). If the window now flashes, the manual present works
+	// and can be wired into SwapBuffers for real frames.
+	if (const char* e = getenv("SPRING_MAC_PRESENT_TEST"); e != nullptr && e[0] == '1') {
+		const bool metalOk = MacMetalPresent_Init(g_metalLayer);
+		GLint vp[4] = {0, 0, 1280, 720};
+		glGetIntegerv(GL_VIEWPORT, vp);
+		const int rw = (vp[2] > 0) ? vp[2] : 1280;
+		const int rh = (vp[3] > 0) ? vp[3] : 720;
+		std::vector<unsigned char> buf(static_cast<size_t>(rw) * rh * 4);
+		fprintf(stderr, "[PRESENT_TEST] metalInit=%d flashing ~8s via Metal (%dx%d)\n", (int)metalOk, rw, rh);
+		for (int i = 0; i < 16; i++) {
+			const bool odd = (i % 2) != 0;
+			glClearColor(odd ? 1.0f : 0.0f, 0.15f, odd ? 0.0f : 1.0f, 1.0f);
+			glClear(GL_COLOR_BUFFER_BIT);
+			glReadPixels(0, 0, rw, rh, GL_BGRA, GL_UNSIGNED_BYTE, buf.data());
+			MacMetalPresent_PresentBGRA(rw, rh, buf.data(), false); // solid color: no flip needed
+			fprintf(stderr, "[PRESENT_TEST] frame %d color=%s\n", i, odd ? "RED" : "BLUE");
+			SDL_Delay(500);
+		}
+		fprintf(stderr, "[PRESENT_TEST] done\n");
+	}
 #endif
 
 	if (!CheckGLContextVersion(minCtx)) {
