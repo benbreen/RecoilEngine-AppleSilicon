@@ -993,30 +993,81 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 		if (g_eglDisplay != EGL_NO_DISPLAY && g_eglSurface != EGL_NO_SURFACE) {
 			// eglSwapBuffers on the (surfaceless) pbuffer presents nowhere, so
 			// read the rendered default framebuffer back and blit it onto the
-			// window's CAMetalLayer via Metal. glReadPixels also syncs, so the
-			// frame is complete. flipY: GL readback is bottom-up.
-			const size_t need = static_cast<size_t>(g_pbufW) * g_pbufH * 4;
-			if (g_presentBuf.size() < need)
-				g_presentBuf.resize(need);
-			glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, g_presentBuf.data());
-			// Debug: dump rendered frames to raw files for inspection without
-			// screen capture. SPRING_MAC_DUMP_FRAME=<prefix>; writes <prefix>.NNN.raw
-			// (8-byte header: uint32 w,h little-endian; then w*h*4 BGRA, bottom-up).
-			if (const char* dp = getenv("SPRING_MAC_DUMP_FRAME")) {
-				static int s_df = 0;
-				if (s_df < 80 && (s_df % 6) == 0) {
-					char path[1024];
-					snprintf(path, sizeof(path), "%s.%03d.raw", dp, s_df);
-					if (FILE* f = fopen(path, "wb")) {
-						const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
-						fwrite(hdr, sizeof(hdr), 1, f);
-						fwrite(g_presentBuf.data(), 1, (size_t)g_pbufW * g_pbufH * 4, f);
-						fclose(f);
+			// window's CAMetalLayer via Metal.
+			//
+			// Fast path: glReadPixels writes directly into an IOSurface-backed
+			// MTLTexture (no CPU intermediate buffer, no CPU Y-flip, no
+			// replaceRegion upload — Metal samples the same backing store and
+			// flips during a one-triangle render pass to the drawable).
+			//
+			// Fallback path: SPRING_MAC_LEGACY_PRESENT=1 or AcquireIOSurfaceBuffer
+			// failure routes through the original CPU staging path.
+			const bool wantLegacy = (getenv("SPRING_MAC_LEGACY_PRESENT") != nullptr);
+			size_t ioRowBytes = 0;
+			void*  ioBase     = wantLegacy ? nullptr
+			                               : MacMetalPresent_AcquireIOSurfaceBuffer(g_pbufW, g_pbufH, &ioRowBytes);
+
+			if (ioBase != nullptr) {
+				// Tell GL the destination has a row stride in pixels matching
+				// the IOSurface's per-row byte stride (may exceed g_pbufW * 4
+				// due to alignment).
+				const int rowPixels = static_cast<int>(ioRowBytes / 4);
+				if (rowPixels != g_pbufW)
+					glPixelStorei(GL_PACK_ROW_LENGTH, rowPixels);
+				glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, ioBase);
+				if (rowPixels != g_pbufW)
+					glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+
+				// Debug: dump rendered frames to raw files for inspection.
+				// SPRING_MAC_DUMP_FRAME=<prefix>; writes <prefix>.NNN.raw
+				// (8-byte header: uint32 w,h; then row-major BGRA, bottom-up).
+				if (const char* dp = getenv("SPRING_MAC_DUMP_FRAME")) {
+					static int s_df = 0;
+					if (s_df < 80 && (s_df % 6) == 0) {
+						char path[1024];
+						snprintf(path, sizeof(path), "%s.%03d.raw", dp, s_df);
+						if (FILE* f = fopen(path, "wb")) {
+							const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
+							fwrite(hdr, sizeof(hdr), 1, f);
+							const uint8_t* row = static_cast<const uint8_t*>(ioBase);
+							for (int y = 0; y < g_pbufH; ++y) {
+								fwrite(row + (size_t)y * ioRowBytes, 1, (size_t)g_pbufW * 4, f);
+							}
+							fclose(f);
+						}
 					}
+					s_df++;
 				}
-				s_df++;
+
+				MacMetalPresent_PresentIOSurface(true);
+			} else {
+				static bool s_loggedLegacy = false;
+				if (!s_loggedLegacy) {
+					fprintf(stderr, "[MetalPresent] LEGACY CPU-staging path active (%s)\n",
+					        wantLegacy ? "forced via SPRING_MAC_LEGACY_PRESENT" : "IOSurface acquire failed");
+					s_loggedLegacy = true;
+				}
+				// Legacy CPU-staging fallback.
+				const size_t need = static_cast<size_t>(g_pbufW) * g_pbufH * 4;
+				if (g_presentBuf.size() < need)
+					g_presentBuf.resize(need);
+				glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, g_presentBuf.data());
+				if (const char* dp = getenv("SPRING_MAC_DUMP_FRAME")) {
+					static int s_df = 0;
+					if (s_df < 80 && (s_df % 6) == 0) {
+						char path[1024];
+						snprintf(path, sizeof(path), "%s.%03d.raw", dp, s_df);
+						if (FILE* f = fopen(path, "wb")) {
+							const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
+							fwrite(hdr, sizeof(hdr), 1, f);
+							fwrite(g_presentBuf.data(), 1, need, f);
+							fclose(f);
+						}
+					}
+					s_df++;
+				}
+				MacMetalPresent_PresentBGRA(g_pbufW, g_pbufH, g_presentBuf.data(), true);
 			}
-			MacMetalPresent_PresentBGRA(g_pbufW, g_pbufH, g_presentBuf.data(), true);
 			// We replaced SDL_GL_SwapWindow (which serviced the Cocoa run loop),
 			// so pump events here to let CoreAnimation actually composite the
 			// presented drawable — including during the single-threaded load.

@@ -85,11 +85,13 @@ if (APPLE)
 		REQUIRED
 	)
 	list(APPEND engineLibraries ${EGL_LIBRARY})
-	# Metal + QuartzCore for the manual pbuffer->CAMetalLayer present path
-	# (rts/System/Platform/Mac/MetalPresent.mm).
+	# Metal + QuartzCore + IOSurface for the manual pbuffer->CAMetalLayer present
+	# path (rts/System/Platform/Mac/MetalPresent.mm). IOSurface backs the
+	# zero-copy glReadPixels destination shared with the MTLTexture.
 	find_library(METAL_LIBRARY Metal)
 	find_library(QUARTZCORE_LIBRARY QuartzCore)
-	list(APPEND engineLibraries ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY})
+	find_library(IOSURFACE_LIBRARY IOSurface)
+	list(APPEND engineLibraries ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOSURFACE_LIBRARY})
 	set(SPRING_MAC_LIBEGL "" CACHE FILEPATH
 		"Optional path to a Mesa libEGL.dylib (e.g. a Zink+KosmicKrisp build). \
 Leave empty to link only against Apple's OpenGL.framework.")

@@ -2,6 +2,7 @@
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <IOSurface/IOSurface.h>
 
 #include "MetalPresent.h"
 #include <vector>
@@ -15,10 +16,110 @@
 static id<MTLDevice>        g_device  = nil;
 static id<MTLCommandQueue>  g_queue   = nil;
 static CAMetalLayer*        g_layer   = nil;
+
+// Path 1: CPU-staging texture for MacMetalPresent_PresentBGRA (early splash).
 static id<MTLTexture>       g_staging = nil;
 static int                  g_w = 0;
 static int                  g_h = 0;
 static std::vector<uint8_t> g_flipBuf;
+
+// Path 2: IOSurface zero-copy. Engine writes pixels directly into the
+// IOSurface base address via glReadPixels (no CPU intermediate buffer, no
+// CPU-side Y flip, no replaceRegion upload). A small render pipeline samples
+// the IOSurface-backed texture and writes it Y-flipped to the drawable.
+static IOSurfaceRef               g_ioSurface       = nullptr;
+static id<MTLTexture>             g_ioTexture       = nil;
+static int                        g_ioW             = 0;
+static int                        g_ioH             = 0;
+static bool                       g_ioLocked        = false;
+static id<MTLRenderPipelineState> g_presentPSO      = nil;
+static id<MTLRenderPipelineState> g_presentPSO_flip = nil;
+static id<MTLSamplerState>        g_linearSampler   = nil;
+
+// Fullscreen-triangle vertex+fragment shader. Two PSOs (flipped + non-flipped)
+// keep the per-frame Y-flip choice branch-free in the GPU shader.
+static NSString* const kPresentShaderSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
+
+struct VOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex VOut vs_present(uint vid [[vertex_id]]) {
+    // Fullscreen triangle covering NDC [-1,1]^2 with UVs [0,1]^2.
+    const float2 pos[3] = { float2(-1.0,  3.0), float2(-1.0, -1.0), float2( 3.0, -1.0) };
+    const float2 uv [3] = { float2( 0.0, -1.0), float2( 0.0,  1.0), float2( 2.0,  1.0) };
+    VOut o;
+    o.position = float4(pos[vid], 0.0, 1.0);
+    o.uv = uv[vid];
+    return o;
+}
+
+vertex VOut vs_present_flip(uint vid [[vertex_id]]) {
+    // Same triangle but with V flipped at the source side.
+    const float2 pos[3] = { float2(-1.0,  3.0), float2(-1.0, -1.0), float2( 3.0, -1.0) };
+    const float2 uv [3] = { float2( 0.0,  2.0), float2( 0.0,  0.0), float2( 2.0,  0.0) };
+    VOut o;
+    o.position = float4(pos[vid], 0.0, 1.0);
+    o.uv = uv[vid];
+    return o;
+}
+
+fragment float4 fs_present(VOut in [[stage_in]],
+                           texture2d<float> src [[texture(0)]],
+                           sampler           s   [[sampler(0)]]) {
+    return src.sample(s, in.uv);
+}
+)";
+
+static bool BuildPresentPipelines()
+{
+    if (g_presentPSO != nil && g_presentPSO_flip != nil)
+        return true;
+
+    NSError* err = nil;
+    id<MTLLibrary> lib = [g_device newLibraryWithSource:kPresentShaderSrc options:nil error:&err];
+    if (lib == nil) {
+        fprintf(stderr, "[MetalPresent] shader compile failed: %s\n",
+                err ? [[err localizedDescription] UTF8String] : "(no error)");
+        return false;
+    }
+    id<MTLFunction> vs     = [lib newFunctionWithName:@"vs_present"];
+    id<MTLFunction> vsFlip = [lib newFunctionWithName:@"vs_present_flip"];
+    id<MTLFunction> fs     = [lib newFunctionWithName:@"fs_present"];
+    if (vs == nil || vsFlip == nil || fs == nil) {
+        fprintf(stderr, "[MetalPresent] shader function lookup failed\n");
+        return false;
+    }
+
+    auto makePSO = [&](id<MTLFunction> vertFn) -> id<MTLRenderPipelineState> {
+        MTLRenderPipelineDescriptor* d = [[MTLRenderPipelineDescriptor alloc] init];
+        d.vertexFunction   = vertFn;
+        d.fragmentFunction = fs;
+        d.colorAttachments[0].pixelFormat = g_layer.pixelFormat;
+        d.colorAttachments[0].blendingEnabled = NO;
+        NSError* e = nil;
+        id<MTLRenderPipelineState> p = [g_device newRenderPipelineStateWithDescriptor:d error:&e];
+        if (p == nil)
+            fprintf(stderr, "[MetalPresent] PSO build failed: %s\n",
+                    e ? [[e localizedDescription] UTF8String] : "(no error)");
+        return p;
+    };
+
+    g_presentPSO      = makePSO(vs);
+    g_presentPSO_flip = makePSO(vsFlip);
+
+    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+    sd.minFilter = MTLSamplerMinMagFilterNearest;
+    sd.magFilter = MTLSamplerMinMagFilterNearest;
+    sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+    sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    g_linearSampler = [g_device newSamplerStateWithDescriptor:sd];
+
+    return (g_presentPSO != nil && g_presentPSO_flip != nil && g_linearSampler != nil);
+}
 
 bool MacMetalPresent_Init(void* caMetalLayer)
 {
@@ -98,4 +199,125 @@ void MacMetalPresent_PresentBGRA(int w, int h, const void* pixels, bool flipY)
 	[blit endEncoding];
 	[cb presentDrawable:drawable];
 	[cb commit];
+}
+
+static void ReleaseIOSurfaceBacking()
+{
+    if (g_ioLocked && g_ioSurface) {
+        IOSurfaceUnlock(g_ioSurface, 0, nullptr);
+        g_ioLocked = false;
+    }
+    g_ioTexture = nil; // autoreleased
+    if (g_ioSurface) {
+        CFRelease(g_ioSurface);
+        g_ioSurface = nullptr;
+    }
+    g_ioW = 0;
+    g_ioH = 0;
+}
+
+static bool EnsureIOSurfaceBacking(int w, int h)
+{
+    if (g_ioSurface && g_ioW == w && g_ioH == h)
+        return true;
+
+    ReleaseIOSurfaceBacking();
+
+    NSDictionary* props = @{
+        (id)kIOSurfaceWidth:           @(w),
+        (id)kIOSurfaceHeight:          @(h),
+        (id)kIOSurfaceBytesPerElement: @(4),
+        (id)kIOSurfacePixelFormat:     @((uint32_t)'BGRA'),
+    };
+    g_ioSurface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+    if (g_ioSurface == nullptr) {
+        fprintf(stderr, "[MetalPresent] IOSurfaceCreate failed (%dx%d)\n", w, h);
+        return false;
+    }
+
+    MTLTextureDescriptor* d =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:(NSUInteger)w
+                                                          height:(NSUInteger)h
+                                                       mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModeShared;
+    g_ioTexture = [g_device newTextureWithDescriptor:d iosurface:g_ioSurface plane:0];
+    if (g_ioTexture == nil) {
+        fprintf(stderr, "[MetalPresent] newTextureWithDescriptor:iosurface: failed\n");
+        ReleaseIOSurfaceBacking();
+        return false;
+    }
+
+    g_ioW = w;
+    g_ioH = h;
+    g_layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
+    return true;
+}
+
+void* MacMetalPresent_AcquireIOSurfaceBuffer(int w, int h, size_t* outRowBytes)
+{
+    if (outRowBytes) *outRowBytes = 0;
+    if (g_device == nil || g_queue == nil || g_layer == nil)
+        return nullptr;
+    if (w <= 0 || h <= 0)
+        return nullptr;
+    if (!EnsureIOSurfaceBacking(w, h))
+        return nullptr;
+    if (!BuildPresentPipelines())
+        return nullptr;
+
+    static bool s_loggedOnce = false;
+    if (!s_loggedOnce) {
+        fprintf(stderr, "[MetalPresent] IOSurface zero-copy path active (%dx%d, rowBytes=%zu)\n",
+                w, h, IOSurfaceGetBytesPerRow(g_ioSurface));
+        s_loggedOnce = true;
+    }
+
+    // Acquire CPU access. AVERTING_PRECEDENT_DEADLOCK: the previous frame's
+    // Metal command buffer may still hold a GPU reference to the surface;
+    // IOSurfaceLock blocks until that read is retired.
+    if (IOSurfaceLock(g_ioSurface, 0, nullptr) != kIOReturnSuccess) {
+        fprintf(stderr, "[MetalPresent] IOSurfaceLock failed\n");
+        return nullptr;
+    }
+    g_ioLocked = true;
+
+    const size_t rb = IOSurfaceGetBytesPerRow(g_ioSurface);
+    if (outRowBytes) *outRowBytes = rb;
+    return IOSurfaceGetBaseAddress(g_ioSurface);
+}
+
+void MacMetalPresent_PresentIOSurface(bool flipY)
+{
+    if (g_device == nil || g_queue == nil || g_layer == nil)
+        return;
+    if (g_ioSurface == nullptr || g_ioTexture == nil)
+        return;
+
+    if (g_ioLocked) {
+        IOSurfaceUnlock(g_ioSurface, 0, nullptr);
+        g_ioLocked = false;
+    }
+
+    id<CAMetalDrawable> drawable = [g_layer nextDrawable];
+    if (drawable == nil) {
+        fprintf(stderr, "[MetalPresent] nextDrawable returned nil — frame not presented\n");
+        return;
+    }
+
+    MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+    rpd.colorAttachments[0].texture     = drawable.texture;
+    rpd.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
+    rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
+    [enc setRenderPipelineState:flipY ? g_presentPSO_flip : g_presentPSO];
+    [enc setFragmentTexture:g_ioTexture atIndex:0];
+    [enc setFragmentSamplerState:g_linearSampler atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+    [cb presentDrawable:drawable];
+    [cb commit];
 }
