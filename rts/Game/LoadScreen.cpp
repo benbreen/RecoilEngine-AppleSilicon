@@ -136,7 +136,11 @@ bool CLoadScreen::Init()
 	// the global font), the latter will cause problems in GL4
 	{
 		auto lock = CLoadLock::GetUniqueLock();
+#if defined(__APPLE__)
+		LOG("[LoadScreen::%s] skipping CLuaIntro (macOS EGL workaround)", __func__);
+#else
 		CLuaIntro::LoadFreeHandler();
+#endif
 	}
 
 	if (mtLoading)

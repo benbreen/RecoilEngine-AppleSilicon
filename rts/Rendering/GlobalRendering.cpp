@@ -7,6 +7,123 @@
 #include <SDL.h>
 
 #include "GlobalRendering.h"
+
+#if defined(__APPLE__) && !defined(HEADLESS)
+#include <EGL/egl.h>
+#include <SDL_syswm.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+
+static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
+static EGLContext g_eglContext = EGL_NO_CONTEXT;
+static EGLSurface g_eglSurface = EGL_NO_SURFACE;
+
+static void* GetNSViewFromSDLWindow(SDL_Window* window) {
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(window, &info))
+        return nullptr;
+    id nswindow = (id)info.info.cocoa.window;
+    id view = ((id(*)(id, SEL))objc_msgSend)(nswindow, sel_registerName("contentView"));
+
+    // Set up CAMetalLayer on the view BEFORE passing to EGL
+    // This prevents crashes in wsi_metal_layer_size
+    Class CAMetalLayerClass = objc_getClass("CAMetalLayer");
+    if (CAMetalLayerClass && view) {
+        // [view setWantsLayer:YES]
+        ((void(*)(id, SEL, BOOL))objc_msgSend)(view, sel_registerName("setWantsLayer:"), YES);
+
+        // Create CAMetalLayer
+        id metalLayer = ((id(*)(id, SEL))objc_msgSend)((id)CAMetalLayerClass, sel_registerName("layer"));
+        if (metalLayer) {
+            // Get view bounds
+            typedef struct { double x, y, w, h; } CGRectD;
+            CGRectD (*getBounds)(id, SEL) = (CGRectD(*)(id, SEL))objc_msgSend;
+            CGRectD bounds = getBounds(view, sel_registerName("bounds"));
+
+            // [metalLayer setFrame:bounds]
+            ((void(*)(id, SEL, CGRectD))objc_msgSend)(metalLayer, sel_registerName("setFrame:"), bounds);
+
+            // [metalLayer setOpaque:YES]
+            ((void(*)(id, SEL, BOOL))objc_msgSend)(metalLayer, sel_registerName("setOpaque:"), YES);
+
+            // Get backing scale factor: [view window] -> [window backingScaleFactor]
+            id win = ((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("window"));
+            if (win) {
+                double (*getScale)(id, SEL) = (double(*)(id, SEL))objc_msgSend;
+                double scale = getScale(win, sel_registerName("backingScaleFactor"));
+                // [metalLayer setContentsScale:scale]
+                ((void(*)(id, SEL, double))objc_msgSend)(metalLayer, sel_registerName("setContentsScale:"), scale);
+            }
+
+            // [view setLayer:metalLayer]
+            ((void(*)(id, SEL, id))objc_msgSend)(view, sel_registerName("setLayer:"), metalLayer);
+
+            return (void*)metalLayer;
+        }
+    }
+    return (void*)view;
+}
+
+static bool InitEGLContext(SDL_Window* window, int major, int minor) {
+    g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (g_eglDisplay == EGL_NO_DISPLAY) return false;
+
+    EGLint eglMajor, eglMinor;
+    if (!eglInitialize(g_eglDisplay, &eglMajor, &eglMinor)) return false;
+
+    eglBindAPI(EGL_OPENGL_API);
+
+    EGLint configAttribs[] = {
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 24, EGL_STENCIL_SIZE, 8,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_NONE
+    };
+    EGLConfig eglConfig;
+    EGLint numConfigs;
+    if (!eglChooseConfig(g_eglDisplay, configAttribs, &eglConfig, 1, &numConfigs) || numConfigs == 0)
+        return false;
+
+    void* nativeView = GetNSViewFromSDLWindow(window);
+    if (nativeView) {
+        g_eglSurface = eglCreateWindowSurface(g_eglDisplay, eglConfig, (EGLNativeWindowType)nativeView, NULL);
+    }
+    if (g_eglSurface == EGL_NO_SURFACE) {
+        EGLint pbAttribs[] = { EGL_WIDTH, 1280, EGL_HEIGHT, 720, EGL_NONE };
+        g_eglSurface = eglCreatePbufferSurface(g_eglDisplay, eglConfig, pbAttribs);
+        if (g_eglSurface == EGL_NO_SURFACE) return false;
+    }
+
+    EGLint contextAttribs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, major,
+        EGL_CONTEXT_MINOR_VERSION, minor,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+        EGL_NONE
+    };
+    g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, contextAttribs);
+    if (g_eglContext == EGL_NO_CONTEXT) return false;
+
+    if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
+        return false;
+
+    return true;
+}
+
+static void DestroyEGLContext() {
+    if (g_eglDisplay != EGL_NO_DISPLAY) {
+        eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (g_eglContext != EGL_NO_CONTEXT) eglDestroyContext(g_eglDisplay, g_eglContext);
+        if (g_eglSurface != EGL_NO_SURFACE) eglDestroySurface(g_eglDisplay, g_eglSurface);
+        eglTerminate(g_eglDisplay);
+    }
+    g_eglDisplay = EGL_NO_DISPLAY;
+    g_eglContext = EGL_NO_CONTEXT;
+    g_eglSurface = EGL_NO_SURFACE;
+}
+#endif // __APPLE__ && !HEADLESS
+
 #include "GlobalRenderingInfo.h"
 #include "Rendering/VerticalSync.h"
 #include "Rendering/GL/StreamBuffer.h"
@@ -425,7 +542,11 @@ SDL_Window* CGlobalRendering::CreateSDLWindow(const char* title) const
 	//   SDL_WINDOW_FULLSCREEN_DESKTOP for "fake" fullscreen that takes the size of the desktop;
 	//   and 0 for windowed mode.
 
+#if defined(__APPLE__) && !defined(HEADLESS)
+	uint32_t sdlFlags  = (SDL_WINDOW_RESIZABLE);
+#else
 	uint32_t sdlFlags  = (SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+#endif
 	         sdlFlags |= (borderless_ ? SDL_WINDOW_FULLSCREEN_DESKTOP : SDL_WINDOW_FULLSCREEN) * fullScreen_;
 	         sdlFlags |= (SDL_WINDOW_BORDERLESS * borderless_);
 
@@ -584,11 +705,27 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 		WindowManagerHelper::BlockCompositing(sdlWindow);
 #endif
 
+#if defined(__APPLE__) && !defined(HEADLESS)
+	if (!InitEGLContext(sdlWindow, minCtx.x, minCtx.y)) {
+		handleerror(nullptr, "Failed to create EGL context on macOS", "ERROR", MBF_OK | MBF_EXCL);
+		return false;
+	}
+	glContext = (SDL_GLContext)g_eglContext;
+#else
 	if ((glContext = CreateGLContext(minCtx)) == nullptr)
 		return false;
+#endif
 
+#if defined(__APPLE__) && !defined(HEADLESS)
+	gladLoadGLLoader((GLADloadproc)eglGetProcAddress);
+#else
 	gladLoadGL();
+#endif
+#ifndef __APPLE__
+#ifndef __APPLE__
 	GLX::Load(sdlWindow);
+#endif
+#endif
 
 	if (!CheckGLContextVersion(minCtx)) {
 		int ctxProfile = 0;
@@ -610,7 +747,14 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 
 
 void CGlobalRendering::MakeCurrentContext(bool clear) const {
+#if defined(__APPLE__) && !defined(HEADLESS)
+	if (clear)
+		eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+	else
+		eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
+#else
 	SDL_GL_MakeCurrent(sdlWindow, clear ? nullptr : glContext);
+#endif
 }
 
 
@@ -632,7 +776,11 @@ void CGlobalRendering::DestroyWindowAndContext() {
 	sdlWindow = nullptr;
 	glContext = nullptr;
 
+#ifndef __APPLE__
+#ifndef __APPLE__
 	GLX::Unload();
+#endif
+#endif
 }
 
 void CGlobalRendering::KillSDL() const {
@@ -700,6 +848,13 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 			}
 		#endif
 		
+#if defined(__APPLE__) && !defined(HEADLESS)
+		if (g_eglDisplay != EGL_NO_DISPLAY && g_eglSurface != EGL_NO_SURFACE) {
+			glFlush();
+			// eglSwapBuffers deadlocks on macOS (dispatch_sync to main thread)
+			// Kopper/Zink renders directly to CAMetalLayer, glFlush is sufficient
+		} else
+#endif
 		SDL_GL_SwapWindow(sdlWindow);
 
 		#ifdef _WIN32
