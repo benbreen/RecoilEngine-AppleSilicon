@@ -251,7 +251,22 @@ static bool EnsureIOSurfaceBacking(int w, int h)
 
     g_ioW = w;
     g_ioH = h;
-    g_layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
+    // Drawable size must match the layer's *natural* backing
+    // pixel count, not the IOSurface size. With SPRING_MAC_NO_RETINA the
+    // IOSurface is at logical (1x) res while the layer's backing is Retina
+    // (2x). Setting drawableSize to the smaller IOSurface size makes
+    // CoreAnimation place the drawable at 1:1 in a corner of the layer.
+    const CGSize  lbSize  = g_layer.bounds.size;
+    const CGFloat cs      = g_layer.contentsScale > 0 ? g_layer.contentsScale : 1.0;
+    const CGFloat targetW = lbSize.width  * cs;
+    const CGFloat targetH = lbSize.height * cs;
+    const CGFloat finalW  = targetW > 0 ? targetW : (CGFloat)w;
+    const CGFloat finalH  = targetH > 0 ? targetH : (CGFloat)h;
+    g_layer.drawableSize = CGSizeMake(finalW, finalH);
+    fprintf(stderr, "[MetalPresent/drawable] IOSurface=%dx%d layer.bounds=%.1fx%.1f pt "
+                    "contentsScale=%.2f -> drawableSize=%.1fx%.1f px\n",
+            w, h, (double)lbSize.width, (double)lbSize.height,
+            (double)cs, (double)finalW, (double)finalH);
     return true;
 }
 

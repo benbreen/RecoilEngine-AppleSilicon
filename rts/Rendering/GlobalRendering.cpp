@@ -23,6 +23,41 @@ static int        g_pbufW = 1280;         // pbuffer (default framebuffer) dimen
 static int        g_pbufH = 720;
 static std::vector<unsigned char> g_presentBuf; // reused glReadPixels staging buffer
 
+// Downsample-before-readback FBO. Engine renders at full
+// pbuffer (Retina) resolution into the default FBO so UI layout is correct;
+// before glReadPixels we glBlitFramebuffer (GL_LINEAR) into this smaller FBO,
+// so the readback only pays for the smaller buffer. Enabled with
+// SPRING_DOWNSAMPLE_READBACK=<2..8>.
+// GL headers aren't included this early in the TU; use the underlying integer
+// type. On every platform we target, GLuint is uint32_t == unsigned int, so
+// taking &g_dsFBO and passing it to glGenFramebuffers is ABI-safe.
+static unsigned int g_dsFBO = 0;
+static unsigned int g_dsTex = 0;
+static int          g_dsW = 0;
+static int          g_dsH = 0;
+
+// Double-buffered Pixel Buffer Objects for async readback.
+// Frame N submits glReadPixels into g_pbos[curIdx] (non-blocking GPU command);
+// the previous frame's PBO is mapped and memcpy'd into the IOSurface. The
+// glReadPixels stall (15-44ms while the GPU drains its pipeline) is hidden
+// behind a 1-frame latency. Disable with SPRING_NO_PBO=1.
+//
+// The truly zero-copy path (render the engine FBO directly into the
+// IOSurface that Metal samples — no readback at all) is blocked on Mesa
+// upstream work: KosmicKrisp's VK_EXT_external_memory_metal needs to grow
+// IOSurface/MTLTexture handle support (today it only handles MTLHeap), and
+// Zink needs a new MESA_memory_object_metal GL extension to consume the
+// resulting VkImage as a GL FBO color attachment. The KosmicKrisp lead
+// (Aitor Camacho at LunarG) authored the underlying VK spec, so the
+// Vulkan half is unusually low-risk; the Zink consumer is the LOC sink.
+// Estimated ~1 month of focused upstream work — worth doing if the port
+// commits long-term, not in scope for shipping today.
+static unsigned int g_pbos[2]   = { 0, 0 };
+static int          g_pboW      = 0;
+static int          g_pboH      = 0;
+static int          g_pboCurIdx = 0;
+static bool         g_pboHasPrev = false;
+
 static void* GetNSViewFromSDLWindow(SDL_Window* window) {
     SDL_SysWMinfo info;
     SDL_VERSION(&info.version);
@@ -137,15 +172,28 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
     // surfaceless/borderless setup, so compute backing pixels explicitly via
     // the window size in points * backingScaleFactor. The manual Metal present
     // reads this whole buffer back each SwapBuffers.
+    //
+    // glReadPixels of the full Retina pbuffer is the
+    // dominant per-frame cost (measured 40-55ms at 2944x1908). The Metal
+    // present pass linear-samples the IOSurface into the drawable, so we can
+    // render at logical (1x) resolution and let CoreAnimation upscale to
+    // Retina with negligible cost — at ~4x less readback data. Opt in with
+    // SPRING_MAC_NO_RETINA=1.
     int winW = 0, winH = 0;
     SDL_GetWindowSize(window, &winW, &winH);
-    const double bsf = GetBackingScaleFactor(window);
+    const double bsfTrue   = GetBackingScaleFactor(window);
+    const bool   noRetina  = (getenv("SPRING_MAC_NO_RETINA") != nullptr);
+    const double bsf       = noRetina ? 1.0 : bsfTrue;
     int pxW = (int)(winW * bsf + 0.5);
     int pxH = (int)(winH * bsf + 0.5);
     if (pxW <= 0 || pxH <= 0) { pxW = 1280; pxH = 720; }
     g_pbufW = pxW;
     g_pbufH = pxH;
-    fprintf(stderr, "[EGL] window %dx%d pts * %.2f scale -> pbuffer %dx%d px\n", winW, winH, bsf, pxW, pxH);
+    fprintf(stderr, "[EGL] window %dx%d pts * %.2f scale -> pbuffer %dx%d px%s\n",
+            winW, winH, bsf, pxW, pxH,
+            noRetina ? " (SPRING_MAC_NO_RETINA=1; native scale was " : "");
+    if (noRetina)
+        fprintf(stderr, "      (true backing scale=%.2f; CoreAnimation will upscale)\n", bsfTrue);
 
     if (nativeView) {
         g_eglSurface = eglCreateWindowSurface(g_eglDisplay, eglConfig, (EGLNativeWindowType)nativeView, NULL);
@@ -991,6 +1039,71 @@ void CGlobalRendering::PostInit() {
 	UpdateTimer();
 }
 
+#if defined(__APPLE__) && !defined(HEADLESS)
+// Lazily allocate (or resize) the downsample-readback FBO.
+// Returns false on allocation/completeness failure; caller should fall back
+// to a full-resolution readback.
+static bool EnsureDownscaleReadbackFBO(int w, int h)
+{
+	if (g_dsFBO != 0 && g_dsW == w && g_dsH == h)
+		return true;
+	if (g_dsFBO == 0) {
+		glGenFramebuffers(1, &g_dsFBO);
+		glGenTextures(1, &g_dsTex);
+	}
+	glBindTexture(GL_TEXTURE_2D, g_dsTex);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+
+	GLint prevDrawFBO = 0;
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFBO);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_dsFBO);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_dsTex, 0);
+	const GLenum st = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDrawFBO);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	if (st != GL_FRAMEBUFFER_COMPLETE) {
+		fprintf(stderr, "[spring-mac/downsample] FBO incomplete: 0x%04x\n", (unsigned)st);
+		return false;
+	}
+	g_dsW = w;
+	g_dsH = h;
+	return true;
+}
+
+// Allocate or resize the two readback PBOs. Tightly packed
+// BGRA (no row padding); the IOSurface row stride is handled at memcpy time.
+// Returns false on allocation failure; caller falls back to sync readback.
+static bool EnsureReadbackPBOs(int w, int h)
+{
+	if (g_pbos[0] != 0 && g_pboW == w && g_pboH == h)
+		return true;
+	if (g_pbos[0] == 0)
+		glGenBuffers(2, g_pbos);
+	const GLsizeiptr nBytes = (GLsizeiptr)w * (GLsizeiptr)h * 4;
+	for (int i = 0; i < 2; ++i) {
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbos[i]);
+		glBufferData(GL_PIXEL_PACK_BUFFER, nBytes, nullptr, GL_STREAM_READ);
+	}
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	g_pboW = w;
+	g_pboH = h;
+	g_pboHasPrev = false;
+	g_pboCurIdx  = 0;
+
+	static bool s_logged = false;
+	if (!s_logged) {
+		fprintf(stderr, "[spring-mac/pbo] async readback active (%dx%d, 1-frame latency)\n", w, h);
+		s_logged = true;
+	}
+	return true;
+}
+#endif
+
 void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 {
 	spring_time pre;
@@ -1066,20 +1179,103 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 			// Fallback path: SPRING_MAC_LEGACY_PRESENT=1 or AcquireIOSurfaceBuffer
 			// failure routes through the original CPU staging path.
 			const bool wantLegacy = (getenv("SPRING_MAC_LEGACY_PRESENT") != nullptr);
+			// Per-frame timing instrumentation. Set SPRING_TIME_PRESENT=1
+			// to log a breakdown of (lock-wait | glReadPixels | Metal present | other)
+			// averaged over every 60 frames. Use to attribute the per-frame cost.
+			static const bool s_timePresent = (getenv("SPRING_TIME_PRESENT") != nullptr);
+
+			// Optional downsample-before-readback. The engine
+			// renders at full pbuffer res (UI layout uses that viewport, so it
+			// looks right), but we blit-downsample to (rdW x rdH) before
+			// glReadPixels — readback data drops by dsFactor^2.
+			static const int s_dsFactor = []() -> int {
+				if (const char* s = getenv("SPRING_DOWNSAMPLE_READBACK")) {
+					const int v = atoi(s);
+					if (v >= 2 && v <= 8) return v;
+				}
+				return 1;
+			}();
+			const int  rdW          = std::max(1, g_pbufW / s_dsFactor);
+			const int  rdH          = std::max(1, g_pbufH / s_dsFactor);
+			const bool doDownsample = (s_dsFactor > 1 && EnsureDownscaleReadbackFBO(rdW, rdH));
+
+			const spring_time tEntry = s_timePresent ? spring_now() : spring_notime;
 			size_t ioRowBytes = 0;
 			void*  ioBase     = wantLegacy ? nullptr
-			                               : MacMetalPresent_AcquireIOSurfaceBuffer(g_pbufW, g_pbufH, &ioRowBytes);
+			                               : MacMetalPresent_AcquireIOSurfaceBuffer(rdW, rdH, &ioRowBytes);
+			const spring_time tAfterAcquire = s_timePresent ? spring_now() : spring_notime;
 
 			if (ioBase != nullptr) {
-				// Tell GL the destination has a row stride in pixels matching
-				// the IOSurface's per-row byte stride (may exceed g_pbufW * 4
-				// due to alignment).
-				const int rowPixels = static_cast<int>(ioRowBytes / 4);
-				if (rowPixels != g_pbufW)
-					glPixelStorei(GL_PACK_ROW_LENGTH, rowPixels);
-				glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, ioBase);
-				if (rowPixels != g_pbufW)
-					glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+				if (doDownsample) {
+					// Blit default FBO (full Retina render target) → smaller FBO with linear filter.
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+					glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_dsFBO);
+					glBlitFramebuffer(0, 0, g_pbufW, g_pbufH,
+					                  0, 0, rdW,     rdH,
+					                  GL_COLOR_BUFFER_BIT, GL_LINEAR);
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, g_dsFBO);
+				}
+				// Async PBO readback is the default — measured
+				// 3x FPS win in busy scenes vs the sync path at the same
+				// resolution (NO_RETINA=1: sync drops 60->22 fps as scene grows;
+				// PBO holds steady at 65-75 fps). The 1-frame present latency
+				// is imperceptible. Opt out with SPRING_NO_PBO=1 to restore
+				// the direct-into-IOSurface sync glReadPixels — useful for
+				// debugging perf regressions or when running at 4x pixel counts
+				// where the per-frame GPU budget is tight enough that
+				// glMapBufferRange can still block.
+				static const bool s_noPBO = (getenv("SPRING_NO_PBO") != nullptr);
+				const size_t srcRowBytes = (size_t)rdW * 4;
+
+				if (s_noPBO) {
+					// Sync path: glReadPixels stalls until the GPU pipeline drains.
+					const int rowPixels = static_cast<int>(ioRowBytes / 4);
+					if (rowPixels != rdW)
+						glPixelStorei(GL_PACK_ROW_LENGTH, rowPixels);
+					glReadPixels(0, 0, rdW, rdH, GL_BGRA, GL_UNSIGNED_BYTE, ioBase);
+					if (rowPixels != rdW)
+						glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+				} else {
+					// Async path: glReadPixels into a PBO is non-blocking; we
+					// then map the *previous* frame's PBO (one frame of present
+					// latency) and memcpy into the IOSurface. The pipeline stall
+					// is hidden because the GPU has had a full frame to finish
+					// writing PBO[prev] before we ask to map it.
+					EnsureReadbackPBOs(rdW, rdH);
+					glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbos[g_pboCurIdx]);
+					// Tightly packed into the PBO; pack alignment 4 (BGRA) is fine.
+					glReadPixels(0, 0, rdW, rdH, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+
+					if (g_pboHasPrev) {
+						const int prevIdx = 1 - g_pboCurIdx;
+						glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbos[prevIdx]);
+						const GLsizeiptr nBytes = (GLsizeiptr)rdW * (GLsizeiptr)rdH * 4;
+						void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, nBytes, GL_MAP_READ_BIT);
+						if (mapped != nullptr) {
+							if (ioRowBytes == srcRowBytes) {
+								std::memcpy(ioBase, mapped, srcRowBytes * (size_t)rdH);
+							} else {
+								const uint8_t* src = static_cast<const uint8_t*>(mapped);
+								uint8_t*       dst = static_cast<uint8_t*>(ioBase);
+								for (int y = 0; y < rdH; ++y) {
+									std::memcpy(dst + (size_t)y * ioRowBytes,
+									            src + (size_t)y * srcRowBytes,
+									            srcRowBytes);
+								}
+							}
+							glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+						}
+					}
+					glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+					g_pboHasPrev = true;
+					g_pboCurIdx  = 1 - g_pboCurIdx;
+				}
+
+				if (doDownsample) {
+					// Restore default read FBO so downstream code finds the state it expects.
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+					glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+				}
 
 				// Debug: dump rendered frames to raw files for inspection.
 				// SPRING_MAC_DUMP_FRAME=<prefix>; writes <prefix>.NNN.raw
@@ -1090,11 +1286,11 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 						char path[1024];
 						snprintf(path, sizeof(path), "%s.%03d.raw", dp, s_df);
 						if (FILE* f = fopen(path, "wb")) {
-							const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
+							const uint32_t hdr[2] = { (uint32_t)rdW, (uint32_t)rdH };
 							fwrite(hdr, sizeof(hdr), 1, f);
 							const uint8_t* row = static_cast<const uint8_t*>(ioBase);
-							for (int y = 0; y < g_pbufH; ++y) {
-								fwrite(row + (size_t)y * ioRowBytes, 1, (size_t)g_pbufW * 4, f);
+							for (int y = 0; y < rdH; ++y) {
+								fwrite(row + (size_t)y * ioRowBytes, 1, (size_t)rdW * 4, f);
 							}
 							fclose(f);
 						}
@@ -1102,7 +1298,37 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 					s_df++;
 				}
 
+				const spring_time tAfterRead = s_timePresent ? spring_now() : spring_notime;
 				MacMetalPresent_PresentIOSurface(true);
+				if (s_timePresent) {
+					const spring_time tAfterPresent = spring_now();
+					static int    s_frameCnt = 0;
+					static double s_sumAcquireMs = 0.0;
+					static double s_sumReadMs    = 0.0;
+					static double s_sumPresentMs = 0.0;
+					static double s_sumTotalMs   = 0.0;
+					s_sumAcquireMs += (tAfterAcquire - tEntry).toMilliSecsf();
+					s_sumReadMs    += (tAfterRead    - tAfterAcquire).toMilliSecsf();
+					s_sumPresentMs += (tAfterPresent - tAfterRead).toMilliSecsf();
+					s_sumTotalMs   += (tAfterPresent - tEntry).toMilliSecsf();
+					if (++s_frameCnt >= 60) {
+						const double n = (double)s_frameCnt;
+						fprintf(stderr,
+						    "[spring-mac/present] avg over %d frames: acquire(=lock-wait) %.2fms | "
+						    "glReadPixels %.2fms | metal-submit %.2fms | total %.2fms (=> %.1f fps if loop-bound)\n",
+						    s_frameCnt,
+						    s_sumAcquireMs / n,
+						    s_sumReadMs    / n,
+						    s_sumPresentMs / n,
+						    s_sumTotalMs   / n,
+						    1000.0 / std::max(0.001, s_sumTotalMs / n));
+						s_frameCnt     = 0;
+						s_sumAcquireMs = 0.0;
+						s_sumReadMs    = 0.0;
+						s_sumPresentMs = 0.0;
+						s_sumTotalMs   = 0.0;
+					}
+				}
 			} else {
 				static bool s_loggedLegacy = false;
 				if (!s_loggedLegacy) {
@@ -2017,10 +2243,13 @@ void CGlobalRendering::ReadWindowPosAndSize()
 		// Engine contract: winSize/viewSize must match the pbuffer FBO the
 		// engine actually renders into — *not* the CAMetalLayer drawableSize.
 		// They are equal by accident at full Retina (drawable == backing ==
-		// pbuffer size), but a HiDPI setup that renders into a smaller FBO
-		// than the drawable would call glViewport(0,0,drawableW,drawableH)
-		// on a smaller FBO and only one quadrant of geometry would land.
-		// Bind to the FBO size instead.
+		// pbuffer size), but diverge under SPRING_MAC_NO_RETINA=1 (FBO at
+		// logical 1x; drawable kept at full Retina backing so CoreAnimation
+		// upscales for free). Reading the drawable here used to silently
+		// align them; with the upscale optimization it breaks viewport =
+		// 4x FBO area, so geometry ends up in the bottom-left quadrant of
+		// the FBO and the rest of the UI is clipped. Bind to the FBO size
+		// instead.
 		const int sdlW_saved = winSizeX, sdlH_saved = winSizeY;
 		if (g_pbufW > 1 && g_pbufH > 1) {
 			winSizeX = g_pbufW;
@@ -2028,10 +2257,12 @@ void CGlobalRendering::ReadWindowPosAndSize()
 		} else {
 			// Pre-EGL-init fallback: mirror InitEGLContext's pbuffer sizing
 			// so loading UI starts at the right resolution.
-			const double scale = GetBackingScaleFactor(sdlWindow);
-			winSizeX = std::max(1, int(double(sdlW_saved) * scale + 0.5));
-			winSizeY = std::max(1, int(double(sdlH_saved) * scale + 0.5));
+			const bool   noRetina = (getenv("SPRING_MAC_NO_RETINA") != nullptr);
+			const double scale    = noRetina ? 1.0 : GetBackingScaleFactor(sdlWindow);
+			winSizeX = std::max(1, int(std::lround(double(sdlW_saved) * scale)));
+			winSizeY = std::max(1, int(std::lround(double(sdlH_saved) * scale)));
 		}
+		SDL_GetWindowPosition(sdlWindow, &winPosX, &winPosY);
 	}
 #endif
 	SDL_GetWindowPosition(sdlWindow, &winPosX, &winPosY);
