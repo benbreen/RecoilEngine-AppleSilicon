@@ -31,7 +31,22 @@ set(engineLibraries SDL2::SDL2)
 
 set(OpenGL_GL_PREFERENCE LEGACY)
 find_package_static(OpenGL 3.0 REQUIRED)
-list(APPEND engineLibraries OpenGL::GL)
+# On macOS, linking Apple's OpenGL.framework causes its NSWindow notification
+# observer to register and then bus-error in +[NSOpenGLContext currentContext]
+# on macOS 26 (Tahoe). When a Mesa libEGL is provided, all GL calls in this
+# binary are routed through glad function pointers loaded via eglGetProcAddress,
+# so we don't need libGL at link time at all — libEGL alone is enough.
+if (APPLE AND SPRING_MAC_LIBEGL)
+	get_filename_component(_MESA_LIB_DIR "${SPRING_MAC_LIBEGL}" DIRECTORY)
+	if (EXISTS "${_MESA_LIB_DIR}/libGL.dylib")
+		list(APPEND engineLibraries "${_MESA_LIB_DIR}/libGL.dylib")
+		message(STATUS "macOS: linking Mesa libGL at ${_MESA_LIB_DIR}/libGL.dylib")
+	else()
+		message(STATUS "macOS: no libGL.dylib next to ${SPRING_MAC_LIBEGL}; relying on libEGL + eglGetProcAddress at runtime")
+	endif()
+else()
+	list(APPEND engineLibraries OpenGL::GL)
+endif()
 
 find_fontconfig_hack()
 find_package_static(Fontconfig 2.11 REQUIRED)

@@ -87,11 +87,14 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
     fprintf(stderr, "[EGL] eglBindAPI(EGL_OPENGL_API) -> %d (lastError=0x%x)\n",
             (int)bindOk, eglGetError());
 
+    // On macOS with Mesa-surfaceless EGL, EGL_WINDOW_BIT is unsupported.
+    // The actual presentation happens via the CAMetalLayer + KosmicKrisp WSI
+    // (Vulkan -> Metal), so we only need a pbuffer-capable config here.
     EGLint configAttribs[] = {
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
         EGL_DEPTH_SIZE, 24, EGL_STENCIL_SIZE, 8,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
         EGL_NONE
     };
     EGLConfig eglConfig;
@@ -112,21 +115,62 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
         if (g_eglSurface == EGL_NO_SURFACE) return false;
     }
 
+    // Dump what the chosen config actually supports.
+    {
+        EGLint cfgRenderable = 0, cfgSurface = 0, cfgConformant = 0;
+        eglGetConfigAttrib(g_eglDisplay, eglConfig, EGL_RENDERABLE_TYPE, &cfgRenderable);
+        eglGetConfigAttrib(g_eglDisplay, eglConfig, EGL_SURFACE_TYPE, &cfgSurface);
+        eglGetConfigAttrib(g_eglDisplay, eglConfig, EGL_CONFORMANT, &cfgConformant);
+        fprintf(stderr, "[EGL] Config: renderable=0x%x surfaceType=0x%x conformant=0x%x (OPENGL_BIT=0x%x)\n",
+                cfgRenderable, cfgSurface, cfgConformant, EGL_OPENGL_BIT);
+    }
+    // Walk down from the highest core-profile version Zink might support.
+    // KosmicKrisp reports Vulkan 1.3 / MoltenVK-parity, so 4.6 -> 3.3 should
+    // cover Zink's GL exposure. We pick the first version eglCreateContext
+    // accepts. Asking for compatibility profile or omitting it both fail.
+    const int2 tryVersions[] = {
+        {4,6},{4,5},{4,4},{4,3},{4,2},{4,1},{4,0},{3,3},{3,2}
+    };
     EGLint contextAttribs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, major,
-        EGL_CONTEXT_MINOR_VERSION, minor,
-        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+        EGL_CONTEXT_MAJOR_VERSION, 0,
+        EGL_CONTEXT_MINOR_VERSION, 0,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
         EGL_NONE
     };
-    g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, contextAttribs);
-    fprintf(stderr, "[EGL] eglCreateContext(major=%d, minor=%d) -> %p (lastError=0x%x)\n",
-            major, minor, (void*)g_eglContext, eglGetError());
+    for (const auto& v : tryVersions) {
+        contextAttribs[1] = v.x;
+        contextAttribs[3] = v.y;
+        g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, contextAttribs);
+        EGLint err = eglGetError();
+        fprintf(stderr, "[EGL] eglCreateContext(%d.%d core) -> %p (lastError=0x%x)\n",
+                v.x, v.y, (void*)g_eglContext, err);
+        if (g_eglContext != EGL_NO_CONTEXT)
+            break;
+    }
+    (void)major; (void)minor;
     if (g_eglContext == EGL_NO_CONTEXT) return false;
 
     EGLBoolean mcOk = eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
     fprintf(stderr, "[EGL] eglMakeCurrent -> %d (lastError=0x%x)\n", (int)mcOk, eglGetError());
     if (!mcOk)
         return false;
+
+    // Probe GL via eglGetProcAddress before the engine's glad pass runs.
+    // Using raw types because GL headers aren't included this high in the file.
+    typedef const unsigned char* (*PFN_glGetString)(unsigned int);
+    auto p_glGetString = (PFN_glGetString)eglGetProcAddress("glGetString");
+    if (p_glGetString) {
+        const char* glVer    = (const char*)p_glGetString(0x1F02u);  // GL_VERSION
+        const char* glVendor = (const char*)p_glGetString(0x1F00u);  // GL_VENDOR
+        const char* glRend   = (const char*)p_glGetString(0x1F01u);  // GL_RENDERER
+        const char* glsl     = (const char*)p_glGetString(0x8B8Cu);  // GL_SHADING_LANGUAGE_VERSION
+        fprintf(stderr, "[EGL/GL] vendor='%s'\n",   glVendor ? glVendor : "(null)");
+        fprintf(stderr, "[EGL/GL] renderer='%s'\n", glRend   ? glRend   : "(null)");
+        fprintf(stderr, "[EGL/GL] version='%s'\n",  glVer    ? glVer    : "(null)");
+        fprintf(stderr, "[EGL/GL] glsl='%s'\n",     glsl     ? glsl     : "(null)");
+    } else {
+        fprintf(stderr, "[EGL/GL] eglGetProcAddress(glGetString) returned NULL\n");
+    }
 
     return true;
 }
