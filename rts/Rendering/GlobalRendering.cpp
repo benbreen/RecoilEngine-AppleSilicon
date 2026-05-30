@@ -1949,6 +1949,28 @@ void CGlobalRendering::ReadWindowPosAndSize()
 		UpdateWindowBorders(sdlWindow);
 
 	SDL_GetWindowSize(sdlWindow, &winSizeX, &winSizeY);
+#if defined(__APPLE__) && !defined(HEADLESS)
+	{
+		// Engine contract: winSize/viewSize must match the pbuffer FBO the
+		// engine actually renders into — *not* the CAMetalLayer drawableSize.
+		// They are equal by accident at full Retina (drawable == backing ==
+		// pbuffer size), but a HiDPI setup that renders into a smaller FBO
+		// than the drawable would call glViewport(0,0,drawableW,drawableH)
+		// on a smaller FBO and only one quadrant of geometry would land.
+		// Bind to the FBO size instead.
+		const int sdlW_saved = winSizeX, sdlH_saved = winSizeY;
+		if (g_pbufW > 1 && g_pbufH > 1) {
+			winSizeX = g_pbufW;
+			winSizeY = g_pbufH;
+		} else {
+			// Pre-EGL-init fallback: mirror InitEGLContext's pbuffer sizing
+			// so loading UI starts at the right resolution.
+			const double scale = GetBackingScaleFactor(sdlWindow);
+			winSizeX = std::max(1, int(double(sdlW_saved) * scale + 0.5));
+			winSizeY = std::max(1, int(double(sdlH_saved) * scale + 0.5));
+		}
+	}
+#endif
 	SDL_GetWindowPosition(sdlWindow, &winPosX, &winPosY);
 
 	//enforce >=0 https://github.com/beyond-all-reason/spring/issues/23
