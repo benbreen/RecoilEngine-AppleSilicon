@@ -941,7 +941,9 @@ bool QTPFS::PathManager::InitializeSearch(QTPFS::entity searchEntity) {
 				if (sharedPathsIt == sharedPaths.end()) {
 					registry.emplace<SharedPathChain>(pathEntity, pathEntity, pathEntity);
 					sharedPaths[path->GetHash()] = pathEntity;
+					search->fullSharedPathHead = pathEntity;
 				} else {
+					search->fullSharedPathHead = sharedPathsIt->second;
 					linkedListHelper.InsertChain<SharedPathChain>(sharedPaths[path->GetHash()], pathEntity);
 				}
 			}
@@ -952,7 +954,9 @@ bool QTPFS::PathManager::InitializeSearch(QTPFS::entity searchEntity) {
 				if (partialSharedPathsIt == partialSharedPaths.end()) {
 					registry.emplace<PartialSharedPathChain>(pathEntity, pathEntity, pathEntity);
 					partialSharedPaths[path->GetVirtualHash()] = pathEntity;
+					search->partSharedPathHead = pathEntity;
 				} else {
+					search->partSharedPathHead = partialSharedPathsIt->second;
 					linkedListHelper.InsertChain<PartialSharedPathChain>(partialSharedPaths[path->GetVirtualHash()], pathEntity);
 				}
 			}
@@ -1136,15 +1140,13 @@ bool QTPFS::PathManager::ExecuteSearch(
 	{
 		// Always clear incase the situation has changed since the last frame, if a partial search
 		// was intended, but not carried out. For example, a full-path share wait.
-		if (search->doPartialSearch)
-			search->doPartialSearch = false;
+		search->doPartialSearch = false;
 
 		if (search->allowPartialSearch)
 		{
-			PartialSharedPathMap::const_iterator partialSharedPathsIt = partialSharedPaths.find(path->GetVirtualHash());
-			if (partialSharedPathsIt != partialSharedPaths.end()) {
+			if (search->partSharedPathHead != entt::null && QTPFS::registry.valid(search->partSharedPathHead)) {
 				assert(path->GetVirtualHash() != QTPFS::BAD_HASH);
-				partialChainHeadEntity = partialSharedPathsIt->second;
+				partialChainHeadEntity = search->partSharedPathHead;
 				if (partialChainHeadEntity != pathEntity) {
 					bool pathIsCopyable = !registry.all_of<PathSearchRef>(partialChainHeadEntity);
 					if (!pathIsCopyable) {
@@ -1161,6 +1163,7 @@ bool QTPFS::PathManager::ExecuteSearch(
 					// had a real bounding box computed from node boundaries. If this assert triggers then it means
 					// that the headPath is a straight line between two points and has nothing to share.
 					IPath* headPath = registry.try_get<IPath>(partialChainHeadEntity);
+					assert(headPath != nullptr);
 					assert(headPath->IsBoundingBoxOverriden());
 					#endif
 					
@@ -1175,9 +1178,8 @@ bool QTPFS::PathManager::ExecuteSearch(
 			}
 		}
 		{
-			SharedPathMap::const_iterator sharedPathsIt = sharedPaths.find(path->GetHash());
-			if (sharedPathsIt != sharedPaths.end()) {
-				chainHeadEntity = sharedPathsIt->second;
+			if (search->fullSharedPathHead != entt::null && QTPFS::registry.valid(search->fullSharedPathHead)) {
+				chainHeadEntity = search->fullSharedPathHead;
 				// LOG("%s: chainHeadEntity %x != pathEntity %x", __func__
 				// 		, entt::to_integral(chainHeadEntity), entt::to_integral(pathEntity));
 				if (chainHeadEntity != pathEntity){
@@ -1193,10 +1195,9 @@ bool QTPFS::PathManager::ExecuteSearch(
 						// 	LOG("%s: full shared (%d)", __func__, search->GetID());
 					}
 					else {
-						PartialSharedPathMap::const_iterator partialSharedPathsIt = partialSharedPaths.find(path->GetVirtualHash());
-						if (partialSharedPathsIt != partialSharedPaths.end()) {
+						if (search->partSharedPathHead != entt::null && QTPFS::registry.valid(search->partSharedPathHead)) {
 							assert(path->GetVirtualHash() != QTPFS::BAD_HASH);
-							partialChainHeadEntity = partialSharedPathsIt->second;
+							partialChainHeadEntity = search->partSharedPathHead;
 
 							// If this path is the head of a partial path, we need to make sure it isn't blocking the head
 							// of the full path copy (which would cause a deadlock.)

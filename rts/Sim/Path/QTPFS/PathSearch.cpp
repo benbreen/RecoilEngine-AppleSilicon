@@ -1306,9 +1306,11 @@ bool QTPFS::PathSearch::ExecuteRawSearch() {
 	auto& fwd = directionalSearchData[SearchThreadData::SEARCH_FORWARD];
 
 	int2 nearestSquare;
-	// FIXME: pathOwner->moveDef could be changed from path request creation
-	haveFullPath = moveDefHandler.GetMoveDefByPathType(nodeLayer->GetNodelayer())
-			->DoRawSearch( pathOwner, pathOwner->moveDef, fwd.srcPoint, fwd.tgtPoint, goalDistance
+
+	// FIXME: pathOwner->moveDef could be changed from path request creation race
+	MoveDef* moveDef = moveDefHandler.GetMoveDefByPathType(nodeLayer->GetNodelayer());
+	haveFullPath = moveDef
+			->DoRawSearch( pathOwner, moveDef, fwd.srcPoint, fwd.tgtPoint, goalDistance
 						 , true, true, false, nullptr, nullptr, &nearestSquare, searchThreadData->threadId);
 
 	if (haveFullPath) {
@@ -1646,6 +1648,7 @@ void QTPFS::PathSearch::Finalize(IPath* path) {
 		//path->SetGoalPosition(path->GetTargetPoint());
 	}
 	path->SetNextPointIndex(0);
+	path->SetRepathTriggered(false);
 	path->SetFirstNodeIdOfCleanPath(0);
 
 	if (!path->IsBoundingBoxOverriden())
@@ -2629,6 +2632,7 @@ bool QTPFS::PathSearch::SharedFinalize(const IPath* srcPath, IPath* dstPath) {
 	dstPath->SetHasPartialPath(srcPath->IsPartialPath());
 	dstPath->SetSearchTime(srcPath->GetSearchTime());
 	dstPath->SetRepathTriggerIndex(srcPath->GetRepathTriggerIndex()); // FIXME: this may race - should be safe now.
+	dstPath->SetRepathTriggered(false);
 	dstPath->SetGoalPosition(goalPos);
 	dstPath->SetIsRawPath(srcPath->IsRawPath());
 

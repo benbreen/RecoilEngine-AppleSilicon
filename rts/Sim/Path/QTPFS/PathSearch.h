@@ -8,6 +8,7 @@
 
 #include "PathDefines.h"
 #include "PathThreads.h"
+#include "Registry.h"
 
 #include "System/float3.h"
 
@@ -264,6 +265,8 @@ public:
 		bool fwdPathConnected = false;
 		bool bwdPathConnected = false;
 		bool useFwdPathOnly = false;
+		QTPFS::entity fullSharedPathHead = entt::null;
+		QTPFS::entity partSharedPathHead = entt::null;
 
 		// int postLoadRepairPathIndexOverride = 0;
 
