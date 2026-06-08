@@ -685,8 +685,10 @@ void QTPFS::PathManager::UpdateNodeLayer(unsigned int layerNum, const SRectangle
 	// adjust the borders so we are not left with "rims" of
 	// impassable squares when eg. a structure is reclaimed
 
+	const bool isIncrementalUpdate = (rect.x1 == 0 && rect.x2 == 0);
 	SRectangle r(rect);
-	if (rect.x1 == 0 && rect.x2 == 0) {
+
+	if (isIncrementalUpdate) {
 		auto& nlMapDmgTracker = nodeLayersMapDamageTrack.mapChangeTrackers[layerNum];
 
 		// No more damaged areas. Finish up.
@@ -727,7 +729,12 @@ void QTPFS::PathManager::UpdateNodeLayer(unsigned int layerNum, const SRectangle
 	// 		}}}
 
 	updateThreadData[currentThread].InitUpdate(r, *containingNode, *md, currentThread);
-	const bool needTesselation = nodeLayers[layerNum].Update(updateThreadData[currentThread]);
+	const bool needTesselation = [=]() {
+		if (isIncrementalUpdate)
+			return this->nodeLayers[layerNum].IncrementalUpdate(this->updateThreadData[currentThread]);
+		else
+			return this->nodeLayers[layerNum].InitialUpdate(this->updateThreadData[currentThread]);
+	}();
 
 	// process the affected root nodes.
 

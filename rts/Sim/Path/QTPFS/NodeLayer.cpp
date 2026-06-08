@@ -90,8 +90,27 @@ void QTPFS::NodeLayer::Clear() {
 	mapSquareStatusCache.clear();
 }
 
+bool QTPFS::NodeLayer::InitialUpdate(UpdateThreadData& threadData) {
+	const SRectangle& r = threadData.areaRelinkedInner;
+	assert( r.GetWidth() != 0 );
+	assert( r.GetHeight() != 0 );
 
-bool QTPFS::NodeLayer::Update(UpdateThreadData& threadData) {
+	return Update(threadData, true);
+}
+
+bool QTPFS::NodeLayer::IncrementalUpdate(UpdateThreadData& threadData) {
+	const SRectangle& r = threadData.areaRelinkedInner;
+
+	// Due to strength of the invariants on the update areas during the match, we have these two functions wrapping
+	// Update().
+	assert( r.GetWidth() == QTPFS_MAP_DAMAGE_SIZE );
+	assert( r.GetHeight() == QTPFS_MAP_DAMAGE_SIZE );
+
+	return Update(threadData, false);
+}
+
+
+bool QTPFS::NodeLayer::Update(UpdateThreadData& threadData, bool isInitialUpdate) {
 	RECOIL_DETAILED_TRACY_ZONE;
 	// assert((luSpeedMods == nullptr && luBlockBits == nullptr) || (luSpeedMods != nullptr && luBlockBits != nullptr));
 
@@ -101,9 +120,6 @@ bool QTPFS::NodeLayer::Update(UpdateThreadData& threadData) {
 	// nodes have divided they will never again grow larger than 16x16 squares in a match.
 	const SRectangle& r = threadData.areaRelinkedInner;
 	const MoveDef* md = threadData.moveDef;
-
-	//assert( r.GetWidth()  == QTPFS_MAP_DAMAGE_SIZE );
-	//assert( r.GetHeight() == QTPFS_MAP_DAMAGE_SIZE );
 
 	auto &blockRect = threadData.areaMaxBlockBits;
 	auto &blockBits = threadData.maxBlockBits;
@@ -156,8 +172,9 @@ bool QTPFS::NodeLayer::Update(UpdateThreadData& threadData) {
 		return CMoveMath::RangeIsBlockedHashedMt(xmin, xmax, zmin, zmax, &virtualObject, tempNum, threadData.threadId);
 	};
 
-	bool updateRequired = false;
-	auto& sectorCache = mapSquareStatusCache[GetSectorIndex(r.x1, r.z1)];
+	// Initial updates always require updates. After that it may not always be the case.
+	bool updateRequired = isInitialUpdate;
+	QTPFS::NodeLayer::NodeSpeedBinCache* sectorCache = &mapSquareStatusCache[GetSectorIndex(r.x1, r.z1)];
 
 	// divide speed-modifiers into bins
 	unsigned int recIdx =  0;
@@ -203,8 +220,19 @@ bool QTPFS::NodeLayer::Update(UpdateThreadData& threadData) {
 
 			const bool isExitOnlyZone = md->IsInExitOnly(chmx, chmz);
 			MapSquareData curSquareState(curSpeedBins[recIdx], isExitOnlyZone);
-			if (curSquareState != sectorCache[recIdx]) {
-				sectorCache[recIdx] = curSquareState;
+
+			unsigned int cacheIdx =  recIdx;
+
+			// The initial map update will span across multiple status cache sectors.
+			// Afterwards this updates only impact a single sector.
+			if (isInitialUpdate){
+				sectorCache = &mapSquareStatusCache[GetSectorIndex(hmx, hmz)];
+				cacheIdx = hmx % NODE_CACHE_SECTOR_STRIDE + (hmz % NODE_CACHE_SECTOR_STRIDE) * NODE_CACHE_SECTOR_STRIDE;
+			}
+
+			if (curSquareState != (*sectorCache)[cacheIdx]) {
+				assert( cacheIdx < NODE_CACHE_SECTOR_SIZE );
+				(*sectorCache)[cacheIdx] = curSquareState;
 				updateRequired = true;
 			}
 		}

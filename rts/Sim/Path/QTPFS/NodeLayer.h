@@ -109,7 +109,8 @@ namespace QTPFS {
 		void Init(unsigned int layerNum);
 		void Clear();
 
-		bool Update(UpdateThreadData& threadData);
+		bool InitialUpdate(UpdateThreadData& threadData);
+		bool IncrementalUpdate(UpdateThreadData& threadData);
 
 		void ExecNodeNeighborCacheUpdates(const SRectangle& ur, UpdateThreadData& threadData);
 		float GetNodeRatio() const { return (numLeafNodes / std::max(1.0f, float(xsize * zsize))); }
@@ -250,6 +251,8 @@ namespace QTPFS {
 		bool UseShortestPath() { return useShortestPath; }
 
 	private:
+		bool Update(UpdateThreadData& threadData, bool isInitialUpdate);
+
 		uint32_t GetSectorIndex(uint32_t x, uint32_t z) const {
 			const uint32_t sectorsPerRow = xsize / NODE_CACHE_SECTOR_STRIDE;
 			return (z / NODE_CACHE_SECTOR_STRIDE) * sectorsPerRow
