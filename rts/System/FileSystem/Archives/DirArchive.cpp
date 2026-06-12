@@ -43,7 +43,7 @@ CDirArchive::CDirArchive(const std::string& archiveName)
 
 		std::string rawFileName = dataDirsAccess.LocateFile(dirName + origName);
 		FileSystem::FixSlashes(rawFileName);
-		files.emplace_back(origName, std::move(rawFileName), -1, 0);
+		files.push_back(Files{origName, std::move(rawFileName), -1, 0});
 
 		// convert to lowercase and store
 		lcNameIndex[StringToLower(origName)] = files.size() - 1;
