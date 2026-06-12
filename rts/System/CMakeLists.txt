@@ -142,15 +142,8 @@ set(sources_engine_System_Platform_Mac
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Mac/MessageBox.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Mac/CrashHandler.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Mac/WindowManagerHelper.cpp"
-	)
-# MetalPresent.mm is Objective-C++ that drives the CAMetalLayer pbuffer
-# present path. The headless build (spring-headless) does not need it
-# and does not link -lobjc, so include it only in the GUI legacy build.
-if(NOT HEADLESS)
-	list(APPEND sources_engine_System_Platform_Mac
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Mac/MetalPresent.mm"
 	)
-endif()
 set(sources_engine_System_Platform_Windows
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Win/CrashHandler.cpp"
 		"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Win/Hardware.cpp"

@@ -62,6 +62,35 @@ target_link_libraries(GameHeadless PRIVATE
 add_executable(engine-headless ${engineSources} ${ENGINE_ICON})
 target_link_libraries(engine-headless no-sound ${engineHeadlessLibraries} GameHeadless no-sound)
 
+# macOS: libplatform_sources.a pulls in rts/System/Platform/Mac/MetalPresent.mm
+# (Objective-C++ for the CAMetalLayer present path). The headless build
+# never invokes that code, but the linker still needs the Objective-C
+# runtime, Metal, QuartzCore, and IOSurface frameworks to resolve symbols
+# from MetalPresent.mm.o. Match what the legacy (GUI) build links.
+if(APPLE)
+	find_library(COREFOUNDATION_LIBRARY Foundation)
+	find_library(METAL_LIBRARY Metal)
+	find_library(QUARTZCORE_LIBRARY QuartzCore)
+	find_library(IOSURFACE_LIBRARY IOSurface)
+	target_link_libraries(engine-headless
+		${COREFOUNDATION_LIBRARY}
+		${METAL_LIBRARY}
+		${QUARTZCORE_LIBRARY}
+		${IOSURFACE_LIBRARY}
+		objc
+	)
+endif()
+
+# macOS ld uses single-pass symbol resolution. GameHeadless references symbols from
+# libraries listed earlier (gflags, streflop, etc.) that were skipped on first pass.
+# Re-list common libraries so they resolve against GameHeadless.
+if(APPLE)
+	target_link_libraries(engine-headless ${engineCommonLibraries})
+endif()
+
+# Export symbols for plugin/AI access (replaces CMP0065 OLD behavior)
+set_target_properties(engine-headless PROPERTIES ENABLE_EXPORTS TRUE)
+
 if    (MINGW)
 	# To enable console output/force a console window to open
 	set_target_properties(engine-headless PROPERTIES LINK_FLAGS "-Wl,-subsystem,console")
