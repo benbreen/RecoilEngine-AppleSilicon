@@ -147,14 +147,14 @@ CSevenZipArchive::CSevenZipArchive(const std::string& name)
 			continue;
 		}
 
-		const auto& fd = fileEntries.push_back(FileEntry{
+		fileEntries.push_back(FileEntry{
 			i, //fp
-			SzArEx_GetFileSize(&db, i), // size
+			static_cast<int>(SzArEx_GetFileSize(&db, i)), // size
 			db.MTime.Vals ? static_cast<uint32_t>(CTimeUtil::NTFSTimeToTime64(db.MTime.Vals[i].Low, db.MTime.Vals[i].High)) : 0, // modtime
 			std::move(fileName.value()) // origName
 		});
 
-		lcNameIndex.emplace(StringToLower(fd.origName), fileEntries.size() - 1);
+		lcNameIndex.emplace(StringToLower(fileEntries.back().origName), fileEntries.size() - 1);
 	}
 
 	// for truly solid archive, one call to SzArEx_Extract() extract all files in one huge buffer,
