@@ -772,6 +772,15 @@ SDL_Window* CGlobalRendering::CreateSDLWindow(const char* title) const
 	int winPosY_ = configHandler->GetInt("WindowPosY");
 	int2 newRes = GetCfgWinRes();
 
+#if defined(__APPLE__) && !defined(HEADLESS)
+	// On macOS keep windowed mode bordered (title bar + window controls)
+	// regardless of WindowBorderless, which the Chobby lobby forces on at
+	// runtime. Fullscreen is unaffected (borderless still selects desktop vs
+	// exclusive there).
+	if (!fullScreen_)
+		borderless_ = false;
+#endif
+
 	// note:
 	//   passing the minimized-flag is useless (state is not saved if minimized)
 	//   and has no effect anyway, setting a minimum size for a window overrides
@@ -1946,6 +1955,13 @@ void CGlobalRendering::SetWindowAttributes(SDL_Window* window)
 	// Get wanted state
 	borderless = configHandler->GetBool("WindowBorderless");
 	fullScreen = configHandler->GetBool("Fullscreen");
+
+#if defined(__APPLE__) && !defined(HEADLESS)
+	// Keep windowed mode bordered on macOS even when Chobby sets WindowBorderless
+	// at runtime (this path runs on its ConfigNotify). Fullscreen unaffected.
+	if (!fullScreen)
+		borderless = false;
+#endif
 	winPosX = configHandler->GetInt("WindowPosX");
 	winPosY = configHandler->GetInt("WindowPosY");
 
