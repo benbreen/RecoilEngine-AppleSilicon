@@ -3,7 +3,7 @@
 	url = https://github.com/spring/pyunitsync.git
 [submodule "tools/pr-downloader"]
 	path = tools/pr-downloader
-	url = https://github.com/beyond-all-reason/pr-downloader
+	url = https://github.com/ExaDev/pr-downloader
 [submodule "AI/Skirmish/BARb"]
 	path = AI/Skirmish/BARb
 	url = https://github.com/rlcevg/CircuitAI.git
