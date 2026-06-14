@@ -992,8 +992,17 @@ void CGlobalRendering::DestroyWindowAndContext() {
 	SDL_DestroyWindow(sdlWindow);
 
 	#if !defined(HEADLESS)
+	#if defined(__APPLE__)
+	// On macOS, glContext holds the EGL context (set in InitGL via the Zink/
+	// KosmicKrisp bootstrap), not an SDL/native GL context. Passing it to
+	// SDL_GL_DeleteContext treats an EGL context as an SDL one and crashes on
+	// shutdown (DispatchedDeleteContext dereferences a bad pointer). Tear it
+	// down through EGL instead.
+	DestroyEGLContext();
+	#else
 	if (glContext)
 		SDL_GL_DeleteContext(glContext);
+	#endif
 	#endif
 
 	sdlWindow = nullptr;
