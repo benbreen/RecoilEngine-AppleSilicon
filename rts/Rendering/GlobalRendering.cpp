@@ -18,6 +18,7 @@
 static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
 static EGLContext g_eglContext = EGL_NO_CONTEXT;
 static EGLSurface g_eglSurface = EGL_NO_SURFACE;
+static EGLConfig  g_eglConfig  = nullptr;  // saved so the pbuffer can be recreated on resize
 static void*      g_metalLayer = nullptr; // CAMetalLayer attached to the window's NSView
 static int        g_pbufW = 1280;         // pbuffer (default framebuffer) dimensions
 static int        g_pbufH = 720;
@@ -162,6 +163,7 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
             (int)cfgOk, numConfigs, eglGetError());
     if (!cfgOk || numConfigs == 0)
         return false;
+    g_eglConfig = eglConfig; // remember for pbuffer recreation on window resize
 
     void* nativeView = GetNSViewFromSDLWindow(window);
     g_metalLayer = nativeView; // CAMetalLayer for the manual present path
@@ -313,6 +315,52 @@ static void DestroyEGLContext() {
     g_eglDisplay = EGL_NO_DISPLAY;
     g_eglContext = EGL_NO_CONTEXT;
     g_eglSurface = EGL_NO_SURFACE;
+}
+
+// Recreate the pbuffer (the engine's default framebuffer) at the window's
+// current pixel size so the window resizes at true resolution instead of
+// scaling a fixed-size buffer. Called from ReadWindowPosAndSize on resize,
+// before winSize is bound to g_pbufW. No-op if the size is unchanged or the
+// EGL context is not up yet. The CAMetalLayer drawable auto-follows because
+// the present path sizes it from g_pbufW/g_pbufH each frame.
+static void ResizeEGLSurfaceIfNeeded(SDL_Window* window) {
+    if (g_eglDisplay == EGL_NO_DISPLAY || g_eglContext == EGL_NO_CONTEXT || g_eglConfig == nullptr)
+        return;
+
+    int winW = 0, winH = 0;
+    SDL_GetWindowSize(window, &winW, &winH);
+    if (winW <= 0 || winH <= 0)
+        return;
+
+    const bool   noRetina = (getenv("SPRING_MAC_NO_RETINA") != nullptr);
+    const double bsf      = noRetina ? 1.0 : GetBackingScaleFactor(window);
+    const int    pxW      = std::max(1, int(std::lround(double(winW) * bsf)));
+    const int    pxH      = std::max(1, int(std::lround(double(winH) * bsf)));
+
+    if (pxW == g_pbufW && pxH == g_pbufH)
+        return; // size unchanged
+
+    EGLint pbAttribs[] = { EGL_WIDTH, pxW, EGL_HEIGHT, pxH, EGL_NONE };
+    EGLSurface newSurface = eglCreatePbufferSurface(g_eglDisplay, g_eglConfig, pbAttribs);
+    if (newSurface == EGL_NO_SURFACE) {
+        fprintf(stderr, "[EGL] resize: eglCreatePbufferSurface %dx%d failed (0x%x); keeping %dx%d\n",
+                pxW, pxH, eglGetError(), g_pbufW, g_pbufH);
+        return; // keep the old surface rather than lose the context
+    }
+
+    if (!eglMakeCurrent(g_eglDisplay, newSurface, newSurface, g_eglContext)) {
+        fprintf(stderr, "[EGL] resize: eglMakeCurrent failed (0x%x); reverting\n", eglGetError());
+        eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
+        eglDestroySurface(g_eglDisplay, newSurface);
+        return;
+    }
+
+    if (g_eglSurface != EGL_NO_SURFACE)
+        eglDestroySurface(g_eglDisplay, g_eglSurface);
+    g_eglSurface = newSurface;
+    g_pbufW = pxW;
+    g_pbufH = pxH;
+    fprintf(stderr, "[EGL] resize: pbuffer -> %dx%d px (window %dx%d * %.2f)\n", pxW, pxH, winW, winH, bsf);
 }
 #endif // __APPLE__ && !HEADLESS
 
@@ -2249,6 +2297,12 @@ void CGlobalRendering::ReadWindowPosAndSize()
 	SDL_GetWindowSize(sdlWindow, &winSizeX, &winSizeY);
 #if defined(__APPLE__) && !defined(HEADLESS)
 	{
+		// True dynamic-resolution resize: recreate the pbuffer FBO at the
+		// window's current pixel size, so winSize below binds to the NEW size
+		// and the engine renders at the new resolution (rather than scaling a
+		// fixed startup buffer). No-op if unchanged or pre-EGL-init.
+		ResizeEGLSurfaceIfNeeded(sdlWindow);
+
 		// Engine contract: winSize/viewSize must match the pbuffer FBO the
 		// engine actually renders into — *not* the CAMetalLayer drawableSize.
 		// They are equal by accident at full Retina (drawable == backing ==
