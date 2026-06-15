@@ -35,7 +35,7 @@ find_package_static(OpenGL 3.0 REQUIRED)
 # observer to register and then bus-error in +[NSOpenGLContext currentContext]
 # on macOS 26 (Tahoe). When a Mesa libEGL is provided, all GL calls in this
 # binary are routed through glad function pointers loaded via eglGetProcAddress,
-# so we don't need libGL at link time at all — libEGL alone is enough.
+# so we don't need libGL at link time at all -- libEGL alone is enough.
 if (APPLE AND SPRING_MAC_LIBEGL)
 	get_filename_component(_MESA_LIB_DIR "${SPRING_MAC_LIBEGL}" DIRECTORY)
 	if (EXISTS "${_MESA_LIB_DIR}/libGL.dylib")
@@ -72,19 +72,6 @@ endif (UNIX AND NOT APPLE)
 if (APPLE)
 	find_library(COREFOUNDATION_LIBRARY Foundation)
 	list(APPEND engineLibraries ${COREFOUNDATION_LIBRARY})
-	# Mesa's EGL is used to bridge OpenGL onto Apple's CAMetalLayer (Kopper/Zink).
-	# Allow MESA_PREFIX (or pkg-config / standard Homebrew layout) to locate it.
-	find_library(EGL_LIBRARY
-		NAMES EGL
-		HINTS
-			$ENV{MESA_PREFIX}/lib
-			/opt/homebrew/opt/mesa/lib
-			/opt/homebrew/lib
-			/usr/local/opt/mesa/lib
-			/usr/local/lib
-		REQUIRED
-	)
-	list(APPEND engineLibraries ${EGL_LIBRARY})
 	# Metal + QuartzCore + IOSurface for the manual pbuffer->CAMetalLayer present
 	# path (rts/System/Platform/Mac/MetalPresent.mm). IOSurface backs the
 	# zero-copy glReadPixels destination shared with the MTLTexture.
@@ -125,6 +112,15 @@ include_directories(${engineIncludes})
 add_executable(engine-legacy ${EXE_FLAGS} ${engineSources} ${ENGINE_ICON} ${engineHeaders})
 target_link_libraries(engine-legacy ${engineLibraries} Game)
 
+# Export symbols for plugin/AI access (replaces CMP0065 OLD behavior)
+set_target_properties(engine-legacy PROPERTIES ENABLE_EXPORTS TRUE)
+
+# Suppress "ignoring duplicate libraries" linker warning on macOS.
+# Static library transitive deps (engineSim, pr-downloader, sound, etc.) propagate
+# dependencies that are already in engineLibraries, causing benign duplicates.
+if(APPLE)
+	target_link_options(engine-legacy PRIVATE "LINKER:-no_warn_duplicate_libraries")
+endif()
 
 ### Install the executable
 install(TARGETS engine-legacy DESTINATION ${BINDIR})
