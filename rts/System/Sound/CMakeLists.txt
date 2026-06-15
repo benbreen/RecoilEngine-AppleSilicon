@@ -44,7 +44,48 @@ if    (NOT NO_SOUND)
 			OpenAL/VorbisShared.cpp
 		)
 
-	find_package_static(OpenAL 1.18.2 REQUIRED)
+	if    (APPLE)
+		# On macOS, find_package(OpenAL) resolves Apple's system
+		# OpenAL.framework, whose 3D positional path is broken/deprecated and
+		# produces no SFX. Link openal-soft instead. CI installs it with
+		# "brew install openal-soft" (a keg-only formula, so it is not in the
+		# default link path) and bundles the resulting libopenal.dylib.
+		#
+		# Locate it via find_library with HINTS rather than a hardcoded path:
+		# OPENAL_SOFT_PREFIX (set by CI to "$(brew --prefix openal-soft)") is
+		# tried first, followed by the standard Homebrew keg locations on both
+		# Apple Silicon and Intel.
+		set(OPENAL_SOFT_PREFIX "" CACHE PATH
+			"Prefix of an openal-soft installation (e.g. $(brew --prefix openal-soft)). Used on macOS to link openal-soft instead of Apple's OpenAL.framework.")
+		find_library(OPENAL_SOFT_LIBRARY
+			NAMES openal
+			HINTS
+				${OPENAL_SOFT_PREFIX}/lib
+				/opt/homebrew/opt/openal-soft/lib
+				/usr/local/opt/openal-soft/lib
+			NO_DEFAULT_PATH
+		)
+		find_path(OPENAL_SOFT_INCLUDE_DIR
+			NAMES al.h
+			HINTS
+				${OPENAL_SOFT_PREFIX}/include
+				/opt/homebrew/opt/openal-soft/include
+				/usr/local/opt/openal-soft/include
+			PATH_SUFFIXES AL
+			NO_DEFAULT_PATH
+		)
+		if    (NOT OPENAL_SOFT_LIBRARY OR NOT OPENAL_SOFT_INCLUDE_DIR)
+			message(FATAL_ERROR "openal-soft not found on macOS. Install it (brew install openal-soft) and pass -DOPENAL_SOFT_PREFIX=$(brew --prefix openal-soft).")
+		endif ()
+		message(STATUS "macOS: linking openal-soft (${OPENAL_SOFT_LIBRARY}, headers ${OPENAL_SOFT_INCLUDE_DIR})")
+		add_library(OpenAL::OpenAL UNKNOWN IMPORTED)
+		set_target_properties(OpenAL::OpenAL PROPERTIES
+			IMPORTED_LOCATION "${OPENAL_SOFT_LIBRARY}"
+			INTERFACE_INCLUDE_DIRECTORIES "${OPENAL_SOFT_INCLUDE_DIR}"
+		)
+	else  (APPLE)
+		find_package_static(OpenAL 1.18.2 REQUIRED)
+	endif (APPLE)
 	find_package_static(OggVorbis 1.3.4 REQUIRED)
 
 	find_package(SDL2 MODULE REQUIRED)
