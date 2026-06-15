@@ -20,6 +20,13 @@ SET(GFLAGS_BUILD_TESTING              FALSE)
 SET(GFLAGS_INSTALL_HEADERS            FALSE)
 SET(GFLAGS_INSTALL_SHARED_LIBS        FALSE)
 SET(GFLAGS_INSTALL_STATIC_LIBS        FALSE)
+# As a subdirectory build, gflags defaults to namespace "gflags" only. On
+# macOS Homebrew's <gflags/gflags.h> may be picked up first via
+# /opt/homebrew/include (DevIL etc. drag it in), and that header pins
+# GFLAGS_NAMESPACE=google -- causing the DEFINE_* macros in engine code to
+# emit google::FlagRegisterer references. Build the vendored gflags with
+# both namespaces so the resulting static lib resolves either spelling.
+SET(GFLAGS_NAMESPACE "google;gflags")
 
 ADD_SUBDIRECTORY(gflags)
 
@@ -64,6 +71,31 @@ endforeach()
 ADD_SUBDIRECTORY(assimp)
 target_compile_definitions(assimp PRIVATE -DASSIMP_BUILD_NO_OWN_ZLIB)
 
+# Suppress warnings in vendored assimp (we're not going to modify the library code)
+# Vendored assimp 4.0.1 trips these warnings in its own code.
+# Recheck this list if assimp is upgraded; later releases fixed some of these.
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+	set(_assimp_warns
+		-Wno-pragma-pack
+		-Wno-ordered-compare-function-pointers
+		-Wno-deprecated-declarations
+		-Wno-tautological-bitwise-compare
+		-Wno-unused-but-set-variable
+	)
+	target_compile_options(assimp PRIVATE ${_assimp_warns})
+	if (TARGET IrrXML)
+		target_compile_options(IrrXML PRIVATE -Wno-pragma-pack)
+	endif()
+elseif (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+	set(_assimp_warns
+		-Wno-class-memaccess
+		-Wno-deprecated-declarations
+		-Wno-tautological-compare
+		-Wno-maybe-uninitialized
+	)
+	target_compile_options(assimp PRIVATE ${_assimp_warns})
+endif()
+
 # simdjson, a fastgltf dependency (manually added to submodules to work around the build system limitations)
 set(SIMDJSON_AVX512_ALLOWED OFF CACHE BOOL "forced by Recoil build env" FORCE)
 set(SIMDJSON_BASH OFF CACHE BOOL "forced by Recoil build env" FORCE)
@@ -89,6 +121,12 @@ ADD_SUBDIRECTORY(fastgltf)
 
 ADD_SUBDIRECTORY(squish)
 ADD_SUBDIRECTORY(rg-etc1)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+	# Benign clang-only warnings in vendored rg_etc1.cpp (no-op labs() on unsigned +
+	# bare mark-as-used statements).
+	# We're not going to touch the decades old impl, so suppress the warnings.
+	target_compile_options(rgetc1 PRIVATE -Wno-absolute-value -Wno-unused-value)
+endif()
 
 option(TRACY_ENABLE "Enable tracy profiling" OFF)
 
@@ -126,3 +164,8 @@ add_subdirectory(lunasvg)
 set(CMAKE_CXX_FLAGS ${SAVED_CMAKE_FLAGS})
 
 add_subdirectory(RmlUi)
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND TARGET rmlui_core)
+	# Known GCC-only -Warray-bounds false positive in vendored RmlUi at -O2+.
+	# Fixed in GCC 14 -- retest dropping this once CI is off GCC 13.
+	target_compile_options(rmlui_core PRIVATE -Wno-array-bounds)
+endif()
