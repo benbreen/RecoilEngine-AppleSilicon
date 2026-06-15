@@ -152,7 +152,11 @@ make_global_var(engineSources
 		${sources_engine_ExternalAI}
 	)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib/assimp/include) #FIXME: hack for rts/Rendering/Models/IModelParser.cpp
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib/simdjson/include)
+# BEFORE: the DevIL fix above adds /opt/homebrew/include to the global include
+# path, where a transitively-installed Homebrew simdjson.h can shadow our
+# vendored, version-matched copy and break the build (newer simdjson trips an
+# AppleClang macro collision). Prepend so <simdjson.h> always resolves here.
+include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/lib/simdjson/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib/fastgltf/include)
 
 ### Add headers for generated project files (e.g. Code::Blocks)
