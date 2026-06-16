@@ -176,6 +176,13 @@ add_subdirectory(lunasvg)
 set(CMAKE_CXX_FLAGS ${SAVED_CMAKE_FLAGS})
 
 add_subdirectory(RmlUi)
+# The RmlUi pinned at the 2025.06.24 tag relies on transitive <cmath> includes
+# that Xcode 26's libc++ no longer provides, so Source/Core/Math.cpp cannot find
+# std::floor/std::ceil. Force-include <cmath> for the vendored RmlUi target on
+# Apple (build-only; RmlUi is the UI layer, not sim).
+if (APPLE AND TARGET rmlui_core)
+	target_compile_options(rmlui_core PRIVATE -include cmath)
+endif()
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND TARGET rmlui_core)
 	# Known GCC-only -Warray-bounds false positive in vendored RmlUi at -O2+.
 	# Fixed in GCC 14 -- retest dropping this once CI is off GCC 13.

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.27)
-cmake_policy(SET CMP0060 OLD) #causes link errors on Linux otherwise
-cmake_policy(SET CMP0065 OLD) #we need binaries compiled with -rdynamic for BARb to work (cause unknown https://github.com/beyond-all-reason/spring/issues/405)
+# CMP0060 (OLD) and CMP0065 (OLD) were removed in CMake 4.x and can no longer be
+# set to OLD. CMP0065's OLD behaviour (-rdynamic on every executable, needed so
+# the BARb AI can resolve engine symbols) is replaced per-target with
+# ENABLE_EXPORTS TRUE on the engine build targets, matching upstream 2026.06.08.
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -191,6 +191,9 @@ if    (MSVC)
 endif (MSVC)
 add_dependencies(engine-dedicated generateVersionFiles)
 
+# Export symbols for plugin/AI access (replaces CMP0065 OLD behavior)
+set_target_properties(engine-dedicated PROPERTIES ENABLE_EXPORTS TRUE)
+
 if    (MINGW)
 	# To enable console output/force a console window to open
 	set_target_properties(engine-dedicated PROPERTIES LINK_FLAGS "-Wl,-subsystem,console")
