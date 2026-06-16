@@ -27,22 +27,31 @@ include(UtilVersion)
 # Fetch through git or from the VERSION file
 fetch_spring_version(${SOURCE_ROOT} SPRING_ENGINE)
 
-# Version pin override.
-# This branch is the 2026.06.08 release tag plus a set of sim-neutral macOS
-# platform commits (rendering, threading stubs, CMake, AppleClang shims). Because
-# HEAD sits past the tag, git-describe yields a development string such as
-# "2026.06.08-27-g<sha> <branch>", which would make the engine report a dev
-# version. The simulation is unchanged from 2026.06.08, so the reported engine
-# version must remain exactly that tag. If a PINNED_VERSION file exists at the
-# source root and contains a valid release version, it takes precedence over the
-# git-describe result.
+# Reported-version resolution for the macOS layer branches.
+# The macOS layer sits past the base release tag, so the default git-describe
+# (fetch_spring_version above) yields a development string "<tag>-N-g<sha>". The
+# engine must report the base release version (e.g. 2026.06.08) to match the
+# autohosts. Derive it branch-agnostically from the nearest release tag: the glob
+# "[0-9]*" matches release tags and excludes the engine-macos-arm64-* release
+# tags, and --abbrev=0 strips the "-N-g<sha>" suffix. An explicit PINNED_VERSION
+# file at the source root still overrides, so a branch may pin a different value.
+set(_spring_version_pinned FALSE)
 if    (EXISTS "${SOURCE_ROOT}/PINNED_VERSION")
 	get_version_from_file(SPRING_ENGINE_PINNED "${SOURCE_ROOT}/PINNED_VERSION")
 	if    (NOT SPRING_ENGINE_PINNED-NOTFOUND)
 		message(STATUS "Engine version pinned via PINNED_VERSION file: ${SPRING_ENGINE_PINNED} (overriding git-describe \"${SPRING_ENGINE_VERSION}\")")
 		set(SPRING_ENGINE_VERSION "${SPRING_ENGINE_PINNED}")
+		set(_spring_version_pinned TRUE)
 	endif ()
 endif ()
+if    (NOT _spring_version_pinned)
+	git_util_describe(SPRING_ENGINE_NEAREST_TAG "${SOURCE_ROOT}" "[0-9]*" --abbrev=0)
+	if    (SPRING_ENGINE_NEAREST_TAG)
+		message(STATUS "Engine version auto-derived from nearest release tag: ${SPRING_ENGINE_NEAREST_TAG} (git-describe was \"${SPRING_ENGINE_VERSION}\")")
+		set(SPRING_ENGINE_VERSION "${SPRING_ENGINE_NEAREST_TAG}")
+	endif ()
+endif ()
+unset(_spring_version_pinned)
 
 parse_spring_version(SPRING_VERSION_ENGINE "${SPRING_ENGINE_VERSION}")
 
