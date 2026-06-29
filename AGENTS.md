@@ -388,6 +388,10 @@ The engine uses custom thread pools. See `THREADPOOL` define and related code.
 4. Follow the workflow in `contributing.md`
 5. Disclose any AI assistance used
 
+### Additional docs
+Please see @coding-agents/ for additional documentation:
+- coding-agents/ENGINE_PERFORMANCE.md — notes on scale targets and engine performance internals. Useful for performance related changes.
+
 ## Additional Resources
 
 - Official website: https://recoilengine.org
