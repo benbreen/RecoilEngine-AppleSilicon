@@ -1417,7 +1417,7 @@ int LuaSyncedRead::GetVectorFromHeading(lua_State* L)
  */
 int LuaSyncedRead::GetFacingFromHeading(lua_State* L)
 {
-	lua_pushnumber(L, ::GetFacingFromHeading(luaL_checknumber(L, 1)));
+	lua_pushnumber(L, ::GetFacingFromHeading((short)(int)luaL_checknumber(L, 1)));
 	return 1;
 }
 
