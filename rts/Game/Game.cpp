@@ -1816,7 +1816,21 @@ void CGame::SimFrame() {
 	#endif
 
 	// useful for desync-debugging (enter instead of -1 start & end frame of the range you want to debug)
-	DumpState(-1, -1, 1, std::nullopt);
+	// SPRING_DUMP_STATE_RANGE="min:max" enables the dump without a source edit
+	// (full synced state per frame in range: RNG, units, features, projectiles)
+	static const std::pair<int, int> dumpStateRange = []() {
+		int mn = -1, mx = -1;
+		if (const char* e = getenv("SPRING_DUMP_STATE_RANGE"))
+			sscanf(e, "%d:%d", &mn, &mx);
+		return std::make_pair(mn, mx);
+	}();
+	// serverRequest=true when env-enabled: DumpState is cheat-gated, but demo
+	// replays of other players' games have cheats off; offline analysis is fine.
+	// outputFloats=true: raw float values instead of hashes, so two builds'
+	// dumps can be diffed numerically (ULP-level vs gross divergence).
+	DumpState(dumpStateRange.first, dumpStateRange.second, 1,
+	          (dumpStateRange.first >= 0) ? std::optional<bool>(true) : std::nullopt,
+	          std::nullopt, /*serverRequest=*/ (dumpStateRange.first >= 0));
 
 	ASSERT_SYNCED(gsRNG.GetGenState());
 	LEAVE_SYNCED_CODE();
