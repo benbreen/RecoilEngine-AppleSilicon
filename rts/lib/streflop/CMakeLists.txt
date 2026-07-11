@@ -86,6 +86,34 @@ SET_SOURCE_FILES_PROPERTIES(${libm_flt32_source} PROPERTIES COMPILE_FLAGS "-DLIB
 
 SET(libm_dbl64_source
 	"libm/dbl64_system.cpp"
+	"libm/dbl-64/streflop_dbl64.cpp"
+	"libm/dbl-64/w_aliases.cpp"
+	"libm/dbl-64/w_globals.cpp"
+	"libm/dbl-64/w_acos.cpp"
+	"libm/dbl-64/w_acosh.cpp"
+	"libm/dbl-64/w_asin.cpp"
+	"libm/dbl-64/w_atan.cpp"
+	"libm/dbl-64/w_atanh.cpp"
+	"libm/dbl-64/w_branred.cpp"
+	"libm/dbl-64/w_cosh.cpp"
+	"libm/dbl-64/w_exp.cpp"
+	"libm/dbl-64/w_exp2.cpp"
+	"libm/dbl-64/w_exp_data.cpp"
+	"libm/dbl-64/w_expm1.cpp"
+	"libm/dbl-64/w_hypot.cpp"
+	"libm/dbl-64/w_log.cpp"
+	"libm/dbl-64/w_log10.cpp"
+	"libm/dbl-64/w_log1p.cpp"
+	"libm/dbl-64/w_log2.cpp"
+	"libm/dbl-64/w_log2_data.cpp"
+	"libm/dbl-64/w_log_data.cpp"
+	"libm/dbl-64/w_math_err.cpp"
+	"libm/dbl-64/w_pow.cpp"
+	"libm/dbl-64/w_pow_log_data.cpp"
+	"libm/dbl-64/w_sin.cpp"
+	"libm/dbl-64/w_sinh.cpp"
+	"libm/dbl-64/w_tan.cpp"
+	"libm/dbl-64/w_tanh.cpp"
 	)
 
 ADD_LIBRARY(streflop STATIC EXCLUDE_FROM_ALL
@@ -104,3 +132,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|armv8")
 	target_compile_definitions(streflop PUBLIC STREFLOP_NEON)
 endif()
 #TODO do not use -fPIC for streflop (decreases performance)
+
+# glibc dbl-64 import (bit-exact doubles): headers + tables live beside the
+# wrappers; shim/ supplies the glibc-internal headers. Narrowing warnings are
+# from C bit-pattern tables compiled as C++ (intended two's-complement).
+file(GLOB streflop_dbl64_wrappers "${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64/w_*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64/streflop_dbl64.cpp")
+set_source_files_properties(${streflop_dbl64_wrappers} PROPERTIES COMPILE_OPTIONS "-Wno-c++11-narrowing;-ffp-contract=off;-I${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64;-I${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64/shim")

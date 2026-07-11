@@ -35,32 +35,51 @@ namespace streflop_libm {
 // Square root, cube root, hypotenuse
 Double __ieee754_sqrt(Double x) { return ::sqrt(x); }
 Double __cbrt(Double x) { return ::cbrt(x); }
-Double __ieee754_hypot(Double x, Double y) { return ::hypot(x, y); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_hypot(Double x, Double y) { return ::hypot(x, y); }
 
 // Exponential and logarithmic
-Double __ieee754_exp(Double x) { return ::exp(x); }
-Double __ieee754_log(Double x) { return ::log(x); }
-Double __ieee754_log2(Double x) { return ::log2(x); }
-Double __ieee754_exp2(Double x) { return ::exp2(x); }
-Double __ieee754_log10(Double x) { return ::log10(x); }
-Double __ieee754_pow(Double x, Double y) { return ::pow(x, y); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_exp(Double x) { return ::exp(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_log(Double x) { return ::log(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_log2(Double x) { return ::log2(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_exp2(Double x) { return ::exp2(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_log10(Double x) { return ::log10(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_pow(Double x, Double y) { return ::pow(x, y); }
 
 // Trigonometric
-Double __sin(Double x) { return ::sin(x); }
-Double __cos(Double x) { return ::cos(x); }
-Double tan(Double x) { return ::tan(x); }
-Double __ieee754_acos(Double x) { return ::acos(x); }
-Double __ieee754_asin(Double x) { return ::asin(x); }
-Double atan(Double x) { return ::atan(x); }
-Double __ieee754_atan2(Double x, Double y) { return ::atan2(x, y); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __sin(Double x) { return ::sin(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __cos(Double x) { return ::cos(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double tan(Double x) { return ::tan(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_acos(Double x) { return ::acos(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_asin(Double x) { return ::asin(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double atan(Double x) { return ::atan(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_atan2(Double x, Double y) { return ::atan2(x, y); }
 
 // Hyperbolic
-Double __ieee754_cosh(Double x) { return ::cosh(x); }
-Double __ieee754_sinh(Double x) { return ::sinh(x); }
-Double __tanh(Double x) { return ::tanh(x); }
-Double __ieee754_acosh(Double x) { return ::acosh(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_cosh(Double x) { return ::cosh(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_sinh(Double x) { return ::sinh(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __tanh(Double x) { return ::tanh(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_acosh(Double x) { return ::acosh(x); }
 Double __asinh(Double x) { return ::asinh(x); }
-Double __ieee754_atanh(Double x) { return ::atanh(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __ieee754_atanh(Double x) { return ::atanh(x); }
 
 // Absolute value, rounding
 Double __fabs(Double x) { return ::fabs(x); }
@@ -89,8 +108,10 @@ int __signbit(Double x) { return ::signbit(x); }
 Double __nextafter(Double x, Double y) { return ::nextafter(x, y); }
 
 // Special functions
-Double __expm1(Double x) { return ::expm1(x); }
-Double __log1p(Double x) { return ::log1p(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __expm1(Double x) { return ::expm1(x); }
+// glibc-dbl64 import provides this bit-exactly:
+// Double __log1p(Double x) { return ::log1p(x); }
 Double __erf(Double x) { return ::erf(x); }
 // POSIX Bessel functions: available on Linux/macOS but not on Windows (MSVCRT).
 // These are only used for double-precision paths which are not sync-critical.

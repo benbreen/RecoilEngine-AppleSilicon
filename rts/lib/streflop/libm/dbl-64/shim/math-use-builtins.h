@@ -1,0 +1,12 @@
+#ifndef MUB_H
+#define MUB_H
+#define USE_SQRT_BUILTIN 1
+#define USE_FMA_BUILTIN 0
+#define USE_ROUND_BUILTIN 1
+#define USE_FLOOR_BUILTIN 1
+#define USE_CEIL_BUILTIN 1
+#define USE_TRUNC_BUILTIN 1
+#define USE_RINT_BUILTIN 1
+#endif
+#define USE_FMAX_BUILTIN 1
+#define USE_FMIN_BUILTIN 1

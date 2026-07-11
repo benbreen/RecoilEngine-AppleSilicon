@@ -1,0 +1,3 @@
+#ifndef FIX_INT_FP_CONVERT_ZERO
+#define FIX_INT_FP_CONVERT_ZERO 0
+#endif

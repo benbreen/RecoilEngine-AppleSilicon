@@ -1,0 +1,7 @@
+#ifndef LDIAG_H
+#define LDIAG_H
+#define DIAG_PUSH_NEEDS_COMMENT
+#define DIAG_POP_NEEDS_COMMENT
+#define DIAG_IGNORE_NEEDS_COMMENT(v,w)
+#endif
+#define DIAG_IGNORE_Os_NEEDS_COMMENT(v,w)
