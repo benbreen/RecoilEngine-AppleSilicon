@@ -195,9 +195,9 @@ check_uflow (double x)
 extern const struct exp_data
 {
   double invln2N;
-  double shift;
   double negln2hiN;
   double negln2loN;
+  double shift;
   double poly[4]; /* Last four coefficients.  */
   double exp2_shift;
   double exp2_poly[EXP2_POLY_ORDER];
@@ -215,8 +215,8 @@ extern const struct log_data
 {
   double ln2hi;
   double ln2lo;
-  double poly[LOG_POLY_ORDER - 1]; /* First coefficient is 1.  */
   double poly1[LOG_POLY1_ORDER - 1];
+  double poly[LOG_POLY_ORDER - 1]; /* First coefficient is 1.  */
   /* See e_log_data.c for details.  */
   struct {double invc, logc;} tab[1 << LOG_TABLE_BITS];
 #ifndef __FP_FAST_FMA
@@ -231,8 +231,8 @@ extern const struct log2_data
 {
   double invln2hi;
   double invln2lo;
-  double poly[LOG2_POLY_ORDER - 1];
   double poly1[LOG2_POLY1_ORDER - 1];
+  double poly[LOG2_POLY_ORDER - 1];
   /* See e_log2_data.c for details.  */
   struct {double invc, logc;} tab[1 << LOG2_TABLE_BITS];
 #ifndef __FP_FAST_FMA

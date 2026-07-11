@@ -48,6 +48,7 @@ float __ieee754_log2f(float); float __ieee754_log10f(float);
 float __ieee754_sinhf(float); float __ieee754_coshf(float); float __tanhf(float);
 }
 extern "C" {
+#ifdef __APPLE__
 /* match the SDK's exact prototypes (math.h declares __double2/__float2) */
 struct __double2 __sincos_stret(double x) {
 	struct __double2 r; r.__sinval = streflop_libm::__sin(x); r.__cosval = streflop_libm::__cos(x); return r;
@@ -55,6 +56,7 @@ struct __double2 __sincos_stret(double x) {
 struct __float2 __sincosf_stret(float x) {
 	struct __float2 r; r.__sinval = streflop_libm::__sinf(x); r.__cosval = streflop_libm::__cosf(x); return r;
 }
+#endif /* __APPLE__ */
 
 /* --- float libm: some in-binary code calls these without streflop; forward to
    streflop's flt-32 (proven fleet-identical) --- */

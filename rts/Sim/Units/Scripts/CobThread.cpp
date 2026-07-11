@@ -545,6 +545,7 @@ bool CCobThread::Tick()
 				r3 = GET_LONG_PC(); // piece
 				r4 = GET_LONG_PC(); // axis
 
+
 				cobInst->Turn(r3, r4, r1, r2);
 			} break;
 			case GET: {

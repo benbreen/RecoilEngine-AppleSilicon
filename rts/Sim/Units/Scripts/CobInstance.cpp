@@ -8,6 +8,7 @@
 #include "CobThread.h"
 
 #include "Game/GameHelper.h"
+#include "Sim/Misc/GlobalSynced.h"
 #include "Game/GlobalUnsynced.h"
 #include "Map/Ground.h"
 #include "Sim/Misc/GroundBlockingObjectMap.h"
@@ -237,7 +238,7 @@ void CCobInstance::WindChanged(float heading, float speed)
 {
 	ZoneScoped;
 	Call(COBFN_SetSpeed, int(speed * 3000.0f));
-	Call(COBFN_SetDirection, short(heading * RAD2TAANG));
+	Call(COBFN_SetDirection, short(int(heading * RAD2TAANG)));
 }
 
 
@@ -387,8 +388,11 @@ void CCobInstance::StartBuilding(float heading, float pitch)
 	std::array<int, 1 + MAX_COB_ARGS> callinArgs;
 
 	callinArgs[0] = 2;
-	callinArgs[1] = short(heading * RAD2TAANG);
-	callinArgs[2] = short(  pitch * RAD2TAANG);
+	// NB: float->short of out-of-range values (heading in [0,2pi) scales up to
+	// 65535 > SHRT_MAX) is UB and diverges between clang-arm64 and gcc-x86;
+	// go via int32 so the mod-2^16 truncation is explicit and identical.
+	callinArgs[1] = short(int(heading * RAD2TAANG));
+	callinArgs[2] = short(int(  pitch * RAD2TAANG));
 
 	Call(COBFN_StartBuilding, callinArgs);
 }
@@ -439,8 +443,11 @@ void CCobInstance::AimWeapon(int weaponNum, float heading, float pitch)
 	std::array<int, 1 + MAX_COB_ARGS> callinArgs;
 
 	callinArgs[0] = 2;
-	callinArgs[1] = short(heading * RAD2TAANG);
-	callinArgs[2] = short(  pitch * RAD2TAANG);
+	// NB: float->short of out-of-range values (heading in [0,2pi) scales up to
+	// 65535 > SHRT_MAX) is UB and diverges between clang-arm64 and gcc-x86;
+	// go via int32 so the mod-2^16 truncation is explicit and identical.
+	callinArgs[1] = short(int(heading * RAD2TAANG));
+	callinArgs[2] = short(int(  pitch * RAD2TAANG));
 
 	Call(COBFN_AimPrimary + COBFN_Weapon_Funcs * weaponNum, callinArgs, CBAimWeapon, weaponNum, nullptr);
 }

@@ -137,4 +137,4 @@ endif()
 # wrappers; shim/ supplies the glibc-internal headers. Narrowing warnings are
 # from C bit-pattern tables compiled as C++ (intended two's-complement).
 file(GLOB streflop_dbl64_wrappers "${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64/w_*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64/streflop_dbl64.cpp")
-set_source_files_properties(${streflop_dbl64_wrappers} PROPERTIES COMPILE_OPTIONS "-Wno-c++11-narrowing;-ffp-contract=off;-I${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64;-I${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64/shim")
+set_source_files_properties(${streflop_dbl64_wrappers} PROPERTIES COMPILE_OPTIONS "-Wno-c++11-narrowing;-Wno-narrowing;-ffp-contract=off;-I${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64;-I${CMAKE_CURRENT_SOURCE_DIR}/libm/dbl-64/shim")
