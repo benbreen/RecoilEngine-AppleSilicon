@@ -1,6 +1,7 @@
 #include "LuaVAOImpl.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <type_traits>
 
 #include "lib/fmt/format.h"
@@ -198,6 +199,36 @@ SDrawElementsIndirectCommand LuaVAOImpl::DrawObjectGetCmdImpl(int id)
 		0u,
 		baseInstance++
 	};
+}
+
+namespace {
+	// Primitive restart only affects strip/loop/fan assembly. For list
+	// topologies it would only matter if the index stream contained the
+	// restart sentinel, which engine/game meshes never encode — but leaving
+	// it enabled is not free on GL-translation stacks: the engine's restart
+	// index for 32-bit buffers is 0xffffff (Lua 2^24 limit, LuaVBOImpl),
+	// which Metal cannot express (fixed all-ones), so KosmicKrisp runs an
+	// index-unroll compute prepass for EVERY such draw (~94% of all draws in
+	// a BAR battle = the Phase C 6.8fps bottleneck).
+	// SPRING_LUAVAO_FORCE_RESTART=1 restores the old unconditional enable.
+	bool UsePrimitiveRestart(GLenum mode)
+	{
+		static const bool forceRestart = (getenv("SPRING_LUAVAO_FORCE_RESTART") != nullptr);
+		if (forceRestart)
+			return true;
+
+		switch (mode) {
+		case GL_LINE_STRIP:
+		case GL_LINE_LOOP:
+		case GL_TRIANGLE_STRIP:
+		case GL_TRIANGLE_FAN:
+		case GL_LINE_STRIP_ADJACENCY:
+		case GL_TRIANGLE_STRIP_ADJACENCY:
+			return true;
+		default:
+			return false;
+		}
+	}
 }
 
 void LuaVAOImpl::CheckDrawPrimitiveType(GLenum mode) const
@@ -429,8 +460,11 @@ void LuaVAOImpl::DrawElements(GLenum mode, sol::optional<int> indCountOpt, sol::
 
 	const auto indexType = indxLuaVBO->bufferAttribDefsVec[0].second.type;
 
-	glEnable(GL_PRIMITIVE_RESTART);
-	glPrimitiveRestartIndex(indxLuaVBO->primitiveRestartIndex);
+	const bool useRestart = UsePrimitiveRestart(mode);
+	if (useRestart) {
+		glEnable(GL_PRIMITIVE_RESTART);
+		glPrimitiveRestartIndex(indxLuaVBO->primitiveRestartIndex);
+	}
 
 	vao->Bind();
 
@@ -454,7 +488,8 @@ void LuaVAOImpl::DrawElements(GLenum mode, sol::optional<int> indCountOpt, sol::
 
 	vao->Unbind();
 
-	glDisable(GL_PRIMITIVE_RESTART);
+	if (useRestart)
+		glDisable(GL_PRIMITIVE_RESTART);
 }
 
 void LuaVAOImpl::ClearSubmission()
@@ -534,12 +569,16 @@ void LuaVAOImpl::RemoveFromSubmission(int idx)
  */
 void LuaVAOImpl::Submit()
 {
-	glEnable(GL_PRIMITIVE_RESTART);
-	glPrimitiveRestartIndex(indxLuaVBO->primitiveRestartIndex);
+	const bool useRestart = UsePrimitiveRestart(GL_TRIANGLES);
+	if (useRestart) {
+		glEnable(GL_PRIMITIVE_RESTART);
+		glPrimitiveRestartIndex(indxLuaVBO->primitiveRestartIndex);
+	}
 
 	vao->Bind();
 	glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, submitCmds.data(), submitCmds.size(), sizeof(SDrawElementsIndirectCommand));
 	vao->Unbind();
 
-	glDisable(GL_PRIMITIVE_RESTART);
+	if (useRestart)
+		glDisable(GL_PRIMITIVE_RESTART);
 }
