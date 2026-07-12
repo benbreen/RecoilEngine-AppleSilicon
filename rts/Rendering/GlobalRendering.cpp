@@ -125,6 +125,12 @@ static double GetBackingScaleFactor(SDL_Window* window) {
 }
 
 static bool InitEGLContext(SDL_Window* window, int major, int minor) {
+    // Default the KosmicKrisp Metal shader compiler to fast math (what native
+    // GL drivers effectively run). Safe+Precise (KK's Vulkan-conformance
+    // default) inflates ALU and register pressure — measured 1598 shader
+    // spill events and 32→51.5 fps on the m7 arena from this alone.
+    // Overridable: export KK_MATH_MODE=safe|relaxed|fast before launch.
+    setenv("KK_MATH_MODE", "fast", 0); // 0 = don't overwrite user's value
     fprintf(stderr, "[EGL] eglGetDisplay(EGL_DEFAULT_DISPLAY)...\n");
     g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     fprintf(stderr, "[EGL] eglGetDisplay -> %p (lastError=0x%x)\n", (void*)g_eglDisplay, eglGetError());
