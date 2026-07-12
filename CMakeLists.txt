@@ -300,6 +300,13 @@ if    (USE_ASAN)
 	endif (MSVC)
 endif (USE_ASAN)
 
+if    (APPLE)
+	option(SPRING_MAC_DIAGNOSTICS "Compile in macOS porting/perf diagnostics (frame capture, present timing, frame dumps); OFF for release builds" FALSE)
+	if    (SPRING_MAC_DIAGNOSTICS)
+		add_definitions(-DSPRING_MAC_DIAGNOSTICS)
+	endif (SPRING_MAC_DIAGNOSTICS)
+endif (APPLE)
+
 ### Tracy related stuff
 option(RECOIL_DETAILED_TRACY_ZONING "Enable additional detailed tracy zones (only enable this for testing/debugging)" FALSE)
 if    (RECOIL_DETAILED_TRACY_ZONING)
