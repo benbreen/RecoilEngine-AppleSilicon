@@ -410,6 +410,7 @@ CONFIG(bool, DebugGLReportGroups).defaultValue(false).description("Show OpenGL P
 
 #if defined(__APPLE__) && !defined(HEADLESS)
 CONFIG(int, MacPresentDirect).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: present shader reads the readback ring directly from unified memory (0 = IOSurface staging path). Runtime-changeable so perf A/B legs can share one seeked process.");
+CONFIG(int, MacWorkerQos).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: sync-pool ThreadPool workers request USER_INITIATED QoS (prefer the performance cluster). Runtime-changeable.");
 #endif
 
 CONFIG(int, GLContextMajorVersion).defaultValue(3).minimumValue(3).maximumValue(4);
@@ -1115,6 +1116,7 @@ void CGlobalRendering::PostInit() {
 
 #if defined(__APPLE__) && !defined(HEADLESS)
 #include <unistd.h> // getpagesize (direct-present ring alignment)
+#include "System/Threading/ThreadPool.h" // SetMacWorkerQosHint
 // Staging-texture ring for PIPELINED readback (fallback when the GPU-pack
 // ring is disabled; see SwapBuffers).
 //
@@ -1493,6 +1495,7 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 				return byteRGBA ? GL_RGBA : GL_BGRA;
 			}();
 			MacMetalPresent_SetSourceRGBA(s_readFormat == GL_RGBA);
+			ThreadPool::SetMacWorkerQosHint(configHandler->GetInt("MacWorkerQos"));
 
 #ifdef SPRING_MAC_DIAGNOSTICS
 			const spring_time tEntry = s_timePresent ? spring_now() : spring_notime;

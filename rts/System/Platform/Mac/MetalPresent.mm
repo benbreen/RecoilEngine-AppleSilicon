@@ -281,6 +281,8 @@ static void ReleaseIOSurfaceBacking()
     g_ioH = 0;
 }
 
+static void EnsurePresentQueue(); // defined with the direct-present path below
+
 // component order of the bytes the engine writes into the IOSurface;
 // set via MacMetalPresent_SetSourceRGBA before the first acquire
 static bool g_ioSrcRGBA = false;
@@ -326,10 +328,7 @@ static bool EnsureIOSurfaceBacking(int w, int h)
             return false;
         }
     }
-    if (g_presentQueue == nil) {
-        g_presentQueue  = dispatch_queue_create("spring.mac.present", DISPATCH_QUEUE_SERIAL);
-        g_presentBudget = dispatch_semaphore_create(2);
-    }
+    EnsurePresentQueue();
 
     g_ioCur = 0;
     g_ioW = w;
@@ -450,7 +449,13 @@ void MacMetalPresent_PresentIOSurface(bool flipY)
 static void EnsurePresentQueue()
 {
     if (g_presentQueue == nil) {
-        g_presentQueue  = dispatch_queue_create("spring.mac.present", DISPATCH_QUEUE_SERIAL);
+        // the present queue gates what reaches the glass — a default-QoS
+        // queue can be scheduled behind interactive work (same class of gap
+        // as the ThreadPool workers, which measured +5% avg / +30% min on
+        // the sim-bound cell when promoted)
+        dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(
+            DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
+        g_presentQueue  = dispatch_queue_create("spring.mac.present", attr);
         g_presentBudget = dispatch_semaphore_create(2);
     }
 }

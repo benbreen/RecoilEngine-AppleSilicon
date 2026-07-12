@@ -27,6 +27,17 @@
 #include <functional>
 #include <cinttypes>
 
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#include <atomic>
+
+namespace ThreadPool {
+	// -1 = unset (env seeds it at worker start), 0 = default QoS, 1 = USER_INITIATED
+	static std::atomic<int> macWorkerQos{-1};
+	void SetMacWorkerQosHint(int v) { macWorkerQos.store(v != 0 ? 1 : 0, std::memory_order_relaxed); }
+}
+#endif
+
 #define USE_TASK_STATS_TRACKING
 
 // not in mingwlibs
@@ -226,6 +237,31 @@ static void WorkerLoop(int tid, bool async)
 	Threading::SetThreadName(IntToString(tid, "worker%i"));
 	#endif
 
+	#if defined(__APPLE__)
+	// macOS has no thread affinity: a default-QoS thread may be scheduled on
+	// the efficiency cluster, and the SLOWEST worker gates every parallel-for
+	// task group (sim pathing, drawer updates). Hint sync-pool workers onto
+	// the P cluster; the async pool is true background work and stays put.
+	// Runtime-changeable (SetMacWorkerQosHint / MacWorkerQos config) so
+	// thermal-drift-free phased A/Bs can flip it mid-run; env
+	// SPRING_MAC_WORKER_QOS seeds the initial value (default on).
+	int appliedQos = -1;
+	if (!async) {
+		static const int envQos = []() {
+			const char* s = getenv("SPRING_MAC_WORKER_QOS");
+			return (s == nullptr || atoi(s) != 0) ? 1 : 0;
+		}();
+		if (ThreadPool::macWorkerQos.load(std::memory_order_relaxed) < 0)
+			ThreadPool::macWorkerQos.store(envQos, std::memory_order_relaxed);
+		const qos_class_t prev = qos_class_self();
+		appliedQos = ThreadPool::macWorkerQos.load(std::memory_order_relaxed);
+		if (appliedQos == 1)
+			pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+		LOG("[ThreadPool] worker%d QoS: 0x%x -> %s", tid, (unsigned)prev,
+		    appliedQos == 1 ? "USER_INITIATED" : "(unchanged)");
+	}
+	#endif
+
 	// make first worker spin a while before sleeping/waiting on the thread signal
 	// this increases the chance that at least one worker is awake when a new task
 	// is inserted, which can then take over the job of waking up sleeping workers
@@ -235,6 +271,16 @@ static void WorkerLoop(int tid, bool async)
 	const auto maxSleepTime = spring_time::fromMilliSecs(30);
 
 	while (!exitFlags[tid]) {
+		#if defined(__APPLE__)
+		// re-apply on runtime toggle (one relaxed atomic load per wake)
+		if (!async) {
+			const int want = ThreadPool::macWorkerQos.load(std::memory_order_relaxed);
+			if (want >= 0 && want != appliedQos) {
+				pthread_set_qos_class_self_np(want == 1 ? QOS_CLASS_USER_INITIATED : QOS_CLASS_DEFAULT, 0);
+				appliedQos = want;
+			}
+		}
+		#endif
 		const auto spinlockEnd = spring_now() + ourSpinTime;
 		      auto sleepTime   = spring_time::fromMicroSecs(1);
 
