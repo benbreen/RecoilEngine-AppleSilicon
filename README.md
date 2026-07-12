@@ -1,25 +1,54 @@
-# Recoil engine — native Apple Silicon (macOS) port
+# Beyond All Reason — for macOS (Apple Silicon)
 
-**Built on [ExaDev's macOS fork](https://github.com/ExaDev/RecoilEngine) of the
-[Recoil engine](https://github.com/beyond-all-reason/RecoilEngine)** (the engine
-behind [Beyond All Reason](https://www.beyondallreason.info/)). ExaDev did the
-foundational Apple Silicon bring-up — the first working builds, the
-surfaceless-EGL → Zink path, Apple-Silicon CMake support, and the ARM64
-deterministic floating-point work now
-[merged upstream](https://github.com/beyond-all-reason/RecoilEngine/pull/2819).
-**This branch is a thin layer of render/present hardening and packaging on top
-of their work**; their commits (and the upstream Recoil commits they carry) form
-its base and keep their original authorship — see [Credits](#credits).
+**[Beyond All Reason](https://www.beyondallreason.info/) is a free, open-source
+real-time strategy game. This project lets you play it natively on Apple Silicon
+Macs** — no Rosetta, no virtual machine — with full graphics and full online
+multiplayer against Windows and Linux players in the same lobbies.
 
-The result runs **natively on Apple Silicon Macs**: arm64 end to end, OpenGL 4.6
-compatibility profile via Mesa's Zink on
-[KosmicKrisp](https://lunarg.com/kosmickrisp/) (Vulkan-on-Metal), no Rosetta,
-no fidelity compromises. Upstream's own README is
-[README-upstream.markdown](README-upstream.markdown); this file covers the macOS port.
+The game runs on the [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine)
+— the program that actually runs the game: its simulation, graphics, and
+networking. The engine ships for Windows and Linux; this repository is a native
+macOS build of it, delivered as a signed, notarized `.app` you download and open
+like any other Mac app. Under the hood it renders through Apple's Metal
+(OpenGL 4.6 → Mesa Zink → [KosmicKrisp](https://lunarg.com/kosmickrisp/) →
+Metal) and simulates bit-identically to the official builds, so Mac players
+share the same ranked matches and replays as everyone else. Pinned to engine
+version **2025.06.24**, the version the live fleet runs.
 
-Pinned to engine version **2025.06.24** — the version the live BAR fleet
-runs — so it plays with, and simulates bit-identically to, the official
-releases.
+## What this project did
+
+The macOS *foundation* — the first working Apple Silicon builds, the
+surfaceless-EGL → Zink graphics path, and the ARM64 deterministic-math work now
+[merged into the official engine](https://github.com/beyond-all-reason/RecoilEngine/pull/2819)
+— comes from [ExaDev's macOS fork](https://github.com/ExaDev/RecoilEngine), whose
+commits keep their authorship here (full [Credits](#credits) below).
+
+This repository is the substantial layer built on top of that foundation,
+developed largely by **Claude Fable** (Anthropic's Claude model) with direction
+from the maintainer — not a thin wrapper:
+
+- **A rebuilt macOS graphics-present path.** The EGL/Metal context and the whole
+  read-back-and-present pipeline were extracted into a proper `Platform/Mac`
+  backend, and the driver stalls and bugs that made the earlier path unshippable
+  were fixed.
+- **A one-command, reproducible build-and-release pipeline.** `make app` builds
+  the graphics driver from pinned upstream source, builds the engine, runs the
+  determinism gates, and produces the signed, notarized, drag-to-install
+  `.app`/`.dmg` — nothing fetched or built by hand ([details below](#building-the-macos-app)).
+- **A month-one performance campaign** taking heavy late-game scenes from
+  single-digit frame rates to display-class ones at 5K, pixel-identical (table
+  below).
+- **Multiplayer sync certification** — bit-exact lockstep proven over
+  full-length replays and live cross-platform matches (see
+  [SYNC_VALIDATION.md](SYNC_VALIDATION.md)).
+- **Native-Mac behaviour** — correct window title, Cmd-based clipboard, a Cmd+Q
+  guard so a reflex keystroke can't abandon a live match, Local-Network
+  permission handling, and loud failure instead of a silent slow software
+  fallback.
+
+Upstream's own engine README is
+[README-upstream.markdown](README-upstream.markdown); this file covers the macOS
+build.
 
 ## What works
 
@@ -28,8 +57,7 @@ releases.
   (up to 92,040 frames) and live LAN games versus unmodified official Linux
   and Windows release binaries, including 16-player games and PvE modes,
   with zero sync errors. Method, numbers, reproduction commands, and honest
-  limits: **[SYNC_VALIDATION.md](SYNC_VALIDATION.md)**. Not yet cleared for
-  public ranked servers — see the community process in that document.
+  limits: **[SYNC_VALIDATION.md](SYNC_VALIDATION.md)**.
 - **Native performance.** A month-one optimization campaign took the heavy
   late-game scenes from single-digit to display-class frame rates at 5K with
   pixel-identical output (measured on an M2 Ultra Mac Studio, vsync on):

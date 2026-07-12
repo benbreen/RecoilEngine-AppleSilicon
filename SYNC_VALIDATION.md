@@ -125,15 +125,6 @@ against an official Windows client.
   frame in the range, so any reported desync can be bisected to the exact
   frame and subsystem against a reference dump.
 
-## 6. Before this client touches public servers
-
-The plan of record, in order: share this document with BAR maintainers and
-server admins; agree a rollout (e.g. unranked/beta flag first); ship with a
-version string that clearly identifies the macOS port build so server-side
-triage is trivial; commit to a fast-pull policy if any live desync is ever
-attributed to this port. None of that has happened yet — this fork is not
-cleared for ranked play until it has.
-
 ## Appendix A — register of synced-code changes
 
 Golden rule 2 of this port is that nothing under `rts/Sim/` (or any synced
