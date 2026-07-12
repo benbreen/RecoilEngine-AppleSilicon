@@ -50,6 +50,13 @@ PORTVER="$(cat "$PKG/PORT_VERSION" 2>/dev/null | tr -d '[:space:]')"
 #            and dylib closure, no game configuration or branding. For any
 #            Spring/Recoil game community, or for building other helpers on.
 PROFILE=bar
+# Online play (bar profile): DISABLED by default while approval to connect to
+# BAR's community servers is sought from the game's creators. Disabled means:
+# the staged chobby_config.json points the lobby at an unresolvable host (so
+# nothing can accidentally reach the real server) and the launcher shows an
+# every-launch notice. Engine-level networking (direct/LAN games) is
+# untouched. Enable for testing with --enable-online or BAR_ONLINE=1.
+ENABLE_ONLINE="${BAR_ONLINE:-0}"
 
 # Test tiers (mirrors upstream Recoil CI: the *build* workflow only builds +
 # packages; heavier validation is separate/opt-in):
@@ -72,6 +79,7 @@ while [ $# -gt 0 ]; do
     --version) VERSION=$2; VERSION_EXPLICIT=1; shift 2;;
     --port-version) PORTVER=$2; shift 2;;
     --profile) PROFILE=$2; shift 2;;
+    --enable-online) ENABLE_ONLINE=1; shift;;
     --certify|--replay-smoke) REPLAY_SMOKE=1; shift;;
     --skip-replay-smoke) REPLAY_SMOKE=0; shift;;   # now the default; kept for compat
     --skip-sync-test) RUN_SYNC_TEST=0; shift;;
@@ -174,6 +182,23 @@ if [ "$PROFILE" = "bar" ]; then
   # black-screens (game=generic -> Chobby shuts down).
   python3 "$PKG/extract-launcher-config.py" "$BAR/chobby/dist_cfg/config.json" "$RESOURCES" \
     || { echo "FATAL: could not extract BAR launcher config from dist_cfg"; exit 1; }
+  if [ "$ENABLE_ONLINE" != "1" ]; then
+    # Neuter the lobby-server address: .invalid is a reserved TLD that can
+    # never resolve, so the lobby cannot reach the real server even by
+    # accident. The marker file makes the launcher show the every-launch
+    # "online play disabled" notice.
+    python3 - "$RESOURCES/chobby_config.json" <<'NEUTER'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+cfg.setdefault("server", {})["address"] = "online-play-disabled.invalid"
+json.dump(cfg, open(p, "w"), indent=2)
+NEUTER
+    touch "$RESOURCES/.online-play-disabled"
+    echo "online play: DISABLED (default — build with --enable-online / BAR_ONLINE=1 to enable)"
+  else
+    echo "online play: ENABLED (--enable-online)"
+  fi
 fi
 
 # Mesa driver dylibs + ICD json (paths inside json rewritten to @loader_path-

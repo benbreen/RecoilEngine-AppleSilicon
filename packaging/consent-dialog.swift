@@ -1,12 +1,15 @@
-// Recoil Engine — first-run consent dialog for the BAR helper.
+// Recoil Engine — user dialogs for the BAR launcher.
 //
-// Shown once, before anything is downloaded: the helper is about to fetch a
-// game (Beyond All Reason) from a third-party content network, and the user
-// must explicitly opt in. "Quit" is the default (Return) so the safe choice
-// is the effortless one.
-//
-// Usage: consent-dialog --server <host>
-// Exit status: 0 = "Download and Run", 1 = "Quit" (or window closed).
+// Two modes:
+//   (default)        first-run consent, shown once before anything downloads:
+//                    the launcher is about to fetch a game (Beyond All Reason)
+//                    from a third-party content network and the user must opt
+//                    in. "Quit" is the default (Return) so the safe choice is
+//                    the effortless one.
+//                    Usage: consent-dialog --server <host>
+//                    Exit: 0 = "Accept Risk and Run", 1 = "Quit"/closed.
+//   --notice <text>  informational notice (e.g. online play disabled), single
+//                    OK button. Exit: always 0.
 import AppKit
 
 func arg(_ name: String) -> String? {
@@ -15,14 +18,22 @@ func arg(_ name: String) -> String? {
     return nil
 }
 
-let server = arg("--server") ?? "the BAR content network"
-
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 app.activate(ignoringOtherApps: true)
 
 let alert = NSAlert()
 alert.messageText = "Recoil Engine"
+
+if let notice = arg("--notice") {
+    alert.informativeText = notice
+    alert.alertStyle = .informational
+    alert.addButton(withTitle: "OK")
+    _ = alert.runModal()
+    exit(0)
+}
+
+let server = arg("--server") ?? "the BAR content network"
 alert.informativeText =
     "Do you wish to download and run the game Beyond All Reason from \(server)?\n\n" +
     "Beyond All Reason is third-party content. It is not hosted, vetted, or " +

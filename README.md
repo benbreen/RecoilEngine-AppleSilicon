@@ -144,6 +144,14 @@ build.
   and Windows release binaries, including 16-player games and PvE modes,
   with zero sync errors. Method, numbers, reproduction commands, and honest
   limits: **[SYNC_VALIDATION.md](SYNC_VALIDATION.md)**.
+
+  > **Online multiplayer is disabled in the released build** while approval to
+  > connect to Beyond All Reason's community servers is sought from the game's
+  > creators. Skirmish vs AI, replays, and local-network (LAN) games work; the
+  > online lobby opens on a sign-in screen you dismiss with **Cancel**. The sim
+  > is online-*capable* and certified above — the block is a deliberate policy
+  > choice in the launcher, not a technical limit. Builds from source can
+  > enable it (see "Building the macOS app").
 - **Native performance.** A month-one optimization campaign took the heavy
   late-game scenes from single-digit to display-class frame rates at 5K with
   pixel-identical output (measured on an M2 Ultra Mac Studio, vsync on):
@@ -217,6 +225,14 @@ make release     # certified + Developer ID signed + notarized (needs
                  #   NOTARY_PROFILE=<notarytool keychain profile>)
 make engine      # just the engine binary, with the sync gates
 ```
+
+**Online play is disabled by default.** Released builds ship with the online
+lobby server neutralized (it resolves to an unreachable host) while approval
+to connect to BAR's community servers is sought from the game's creators — LAN
+and local play are unaffected. To build a copy with online enabled for your
+own testing, pass `ONLINE=1` (e.g. `ONLINE=1 make app`) or
+`packaging/release-build.sh --enable-online`. Please do not distribute
+online-enabled builds until that approval is in place.
 
 What the build does, in order: builds the Mesa Zink+KosmicKrisp driver from
 the pinned upstream commit + `patches/mesa/` (provenance-stamped, skipped
