@@ -101,6 +101,38 @@ reducing what is drawn.
 - **Result:** arena 32.1 → 51.5 fps (+60%), screenshot-identical output.
   Final campaign numbers: 8.0× / 5.9× / 9.7× on the three battle cells.
 
+### 6. Direct present: Metal reads the readback ring straight from unified memory
+
+- **Symptom:** the present path still cost the main thread a per-frame
+  `glMapBufferRange` + 44 MB `memcpy` into an IOSurface (~1.5–2 ms at 5K),
+  plus IOSurface locking.
+- **Fix:** the pack ring is allocated with `ARB_buffer_storage` and
+  persistently mapped (page-aligned slots); each mapped pointer is wrapped
+  once as an `MTLBuffer` (`newBufferWithBytesNoCopy`) and the present
+  fragment shader reads the pixels directly — no staging copy, no map/unmap.
+  Slot reuse is fenced; the fence wait doubles as pipeline backpressure
+  (an experiment that skipped presents when the GPU ran behind produced
+  high "rendered" fps and a stale display — rejected). Runtime
+  `MacPresentDirect=0` falls back to the IOSurface path.
+- **Result:** ~+1.1–1.4 fps de-trended on the main-thread-bound late-game
+  cell (n=10 overnight ABAB, zero sign flips, 4–7× the measured 0.3 fps
+  noise floor); large tail gains on live arena scenes (min 40 → 59, light
+  frames 77 → 114). Neutral where the GPU is the limiter.
+
+### 7. Thread QoS: keep frame-critical threads off the efficiency cluster
+
+- **Symptom:** worst-case frame dips in sim-heavy scenes; ThreadPool
+  workers inherited `QOS_CLASS_DEFAULT` (macOS has no thread affinity, and
+  child threads do not inherit promotion), so the scheduler could place
+  them on E-cores — the slowest worker gates every parallel-for group.
+- **Fix:** sync-pool workers request `QOS_CLASS_USER_INITIATED`
+  (runtime-changeable via `MacWorkerQos`; async pool stays default); the
+  Metal present dispatch queue is created `QOS_CLASS_USER_INTERACTIVE`.
+  Promotions are logged at startup. Note: applying the same treatment to
+  Mesa's internal driver queues measured flat — promote only what measures.
+- **Result:** ~+1.2–1.3 fps de-trended on the sim-bound cell (same n=10
+  protocol) and the worst-case floor 13–14 → 17–18 fps (~+30%).
+
 ## Determinism (the part that must never be exciting)
 
 All simulation math is bit-identical to official builds — the full method,
