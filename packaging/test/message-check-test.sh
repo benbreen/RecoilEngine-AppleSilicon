@@ -187,6 +187,25 @@ python3 "$AT/assemble.py" --check >/dev/null 2>&1; [ $? = 1 ] && ok "invalid JSO
 rm "$AT/messages/c.jsonc"
 python3 "$AT/assemble.py" --check >/dev/null 2>&1 && ok "clean set validates" || bad "clean validate"
 
+# ---------- transport hardening ----------------------------------------------
+echo "== transport hardening =="
+"$BIN" --config-url "http://example.com/m.json" --app-version 1 --seen-file "$WORK/nh" --dry-run >/dev/null 2>&1
+[ $? = 0 ] && ok "non-https URL refused (fail-open, no fetch)" || bad "http refuse"
+head -c 9000000 /dev/zero | tr '\0' 'x' > "$WORK/big.json"
+r=$("$BIN" --config-url "file://$WORK/big.json" --app-version 1 --seen-file "$WORK/nz" --dry-run 2>/dev/null | grep -c '^SHOW'); rc=$?
+[ "$r" = 0 ] && ok "oversized config (>8MB) rejected" || bad "size cap" "shown=$r"
+
+# ---------- HTML sanitizer ----------------------------------------------------
+echo "== HTML sanitizer =="
+san() { printf '%s' "$1" | "$BIN" --sanitize 2>/dev/null; }
+o=$(san '<b>ok</b><script>evil()</script>')
+{ case "$o" in *"<b>ok</b>"*) [ "${o/script/}" = "$o" ];; *) false;; esac; } && ok "script stripped, formatting kept" || bad "script" "$o"
+o=$(san '<p>x</p><img src="http://t/p.png">'); [ "${o/img/}" = "$o" ] && ok "img (external-resource load) stripped" || bad "img" "$o"
+o=$(san '<a href="javascript:alert(1)">x</a>'); [ "${o/javascript:/}" = "$o" ] && ok "javascript: href neutralised" || bad "jshref" "$o"
+o=$(san '<p onclick="bad()">x</p>'); [ "${o/onclick/}" = "$o" ] && ok "event-handler attribute stripped" || bad "onclick" "$o"
+o=$(san '<iframe src="http://e/"></iframe><b>keep</b>'); { [ "${o/iframe/}" = "$o" ] && case "$o" in *"<b>keep</b>"*) true;; *) false;; esac; } && ok "iframe stripped, siblings kept" || bad "iframe" "$o"
+o=$(san '<a href="https://safe.example">l</a>'); case "$o" in *'href="https://safe.example"'*) ok "safe https link preserved";; *) bad "safe link" "$o";; esac
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" = 0 ]

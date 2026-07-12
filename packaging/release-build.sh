@@ -29,6 +29,13 @@ OUT="${RELEASE_OUT:-$BAR/release-artifacts}"
 MESA_PREFIX="${MESA_PREFIX:-$BAR/deps/mesa-native-release}"
 IDENTITY="-"           # "-" = ad-hoc
 NOTARY_PROFILE=""
+# App Store Connect API-key auth (alternative to the keychain profile, and
+# more durable — reads the .p8 from disk each run, so it survives whatever
+# clears keychain items). Set all three (flags or env) to use it; it takes
+# precedence over --notary-profile.
+NOTARY_KEY="${NOTARY_KEY:-}"          # path to AuthKey_XXXX.p8
+NOTARY_KEY_ID="${NOTARY_KEY_ID:-}"    # the key's Key ID
+NOTARY_ISSUER="${NOTARY_ISSUER:-}"    # the issuer UUID
 # Two versions, two jobs:
 #   ENGINE version (e.g. "2025.06.24") — the fleet's pinned identity, the thing
 #     lockstep multiplayer keys on (golden rule 5). Read from the built binary
@@ -76,6 +83,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --identity) IDENTITY=$2; shift 2;;
     --notary-profile) NOTARY_PROFILE=$2; shift 2;;
+    --notary-key) NOTARY_KEY=$2; shift 2;;
+    --notary-key-id) NOTARY_KEY_ID=$2; shift 2;;
+    --notary-issuer) NOTARY_ISSUER=$2; shift 2;;
     --version) VERSION=$2; VERSION_EXPLICIT=1; shift 2;;
     --port-version) PORTVER=$2; shift 2;;
     --profile) PROFILE=$2; shift 2;;
@@ -101,13 +111,24 @@ echo "profile: $PROFILE -> $(basename "$APP")"
 # actually resolves NOW — a missing/expired credential otherwise wastes the
 # whole ~10-min build only to die at the notarize step (keychain items don't
 # always survive a relogin/keychain relock).
-if [ "$IDENTITY" != "-" ] && [ -n "$NOTARY_PROFILE" ]; then
-  xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 || {
-    echo "FATAL: notary profile '$NOTARY_PROFILE' does not resolve — re-store it:"
-    echo "  xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <id> --team-id <team> --password <app-specific-pw>"
+# Resolve notarization auth once: API key (durable) takes precedence over the
+# keychain profile. NOTARY_AUTH is the arg list passed to every notarytool call.
+NOTARY_AUTH=()
+if [ -n "$NOTARY_KEY" ] && [ -n "$NOTARY_KEY_ID" ] && [ -n "$NOTARY_ISSUER" ]; then
+  NOTARY_AUTH=(--key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+  NOTARY_DESC="API key $NOTARY_KEY_ID"
+elif [ -n "$NOTARY_PROFILE" ]; then
+  NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+  NOTARY_DESC="keychain profile '$NOTARY_PROFILE'"
+fi
+if [ "$IDENTITY" != "-" ] && [ "${#NOTARY_AUTH[@]}" -gt 0 ]; then
+  xcrun notarytool history "${NOTARY_AUTH[@]}" >/dev/null 2>&1 || {
+    echo "FATAL: notarization auth ($NOTARY_DESC) does not resolve. Re-store the"
+    echo "keychain profile, or pass an API key (--notary-key/-key-id/-issuer or"
+    echo "NOTARY_KEY/NOTARY_KEY_ID/NOTARY_ISSUER) which does not depend on the keychain."
     exit 1
   }
-  echo "notary profile '$NOTARY_PROFILE': OK"
+  echo "notarization auth: $NOTARY_DESC — OK"
 fi
 
 echo "=== [1/7] gated engine build ($SRC -> $BUILD)"
@@ -198,15 +219,21 @@ if [ "$PROFILE" = "bar" ]; then
   python3 "$PKG/extract-launcher-config.py" "$BAR/chobby/dist_cfg/config.json" "$RESOURCES" \
     || { echo "FATAL: could not extract BAR launcher config from dist_cfg"; exit 1; }
   if [ "$ENABLE_ONLINE" != "1" ]; then
-    # Neuter the lobby-server address: .invalid is a reserved TLD that can
-    # never resolve, so the lobby cannot reach the real server even by
-    # accident. The marker file makes the launcher show the every-launch
-    # "online play disabled" notice.
+    # Neuter the lobby-server endpoint so online play cannot connect:
+    #   host: online-play-disabled.localhost — .localhost is a reserved TLD
+    #     (RFC 6761) that resolvers MUST map to loopback, so a connection can
+    #     never leave the machine (no ISP NXDOMAIN-hijack risk) and the name
+    #     can never be registered. Descriptive too — the lobby prints it.
+    #   port: 1 (tcpmux) — a privileged port nothing on a normal Mac listens
+    #     on, so the loopback connect is refused INSTANTLY (no hang, no chance
+    #     of hitting a local dev server that might sit on a common port).
+    # The marker file makes the launcher show the "online play disabled" notice.
     python3 - "$RESOURCES/chobby_config.json" <<'NEUTER'
 import json, sys
 p = sys.argv[1]
 cfg = json.load(open(p))
-cfg.setdefault("server", {})["address"] = "online-play-disabled.invalid"
+cfg.setdefault("server", {})["address"] = "online-play-disabled.localhost"
+cfg["server"]["port"] = 1
 json.dump(cfg, open(p, "w"), indent=2)
 NEUTER
     touch "$RESOURCES/.online-play-disabled"
@@ -456,19 +483,19 @@ echo "codesign OK (identity: ${IDENTITY})"
 echo "=== [6/7] notarization"
 mkdir -p "$OUT"
 if [ "$PROFILE" = "bar" ]; then
-  ZIP="$OUT/BAR-macos-${PORTVER}.zip"
+  ZIP="$OUT/BAR-Launcher-v${PORTVER}.zip"
 else
   ZIP="$OUT/Recoil-macos-${VERSION}-port${PORTVER}.zip"
 fi
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
-if [ "$IDENTITY" != "-" ] && [ -n "$NOTARY_PROFILE" ]; then
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+if [ "$IDENTITY" != "-" ] && [ "${#NOTARY_AUTH[@]}" -gt 0 ]; then
+  xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait
   xcrun stapler staple "$APP"
   spctl --assess --type execute --verbose "$APP"
   # re-zip with the stapled ticket
   ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 else
-  echo "(skipped: ad-hoc signature or no --notary-profile; Gatekeeper will"
+  echo "(skipped: ad-hoc signature or no notarization auth; Gatekeeper will"
   echo " reject this artifact on other machines — for local testing only)"
 fi
 
@@ -477,15 +504,15 @@ if [ "$PROFILE" != "bar" ]; then
   DMG="(none — engine profile ships the notarized zip only)"
   echo "(skipped — the engine bundle is consumed by tooling/other launchers, not drag-installed)"
 else
-DMG="$OUT/BAR-macos-${PORTVER}.dmg"
-VOLNAME="BAR Launcher"
+DMG="$OUT/BAR-Launcher-v${PORTVER}.dmg"
+VOLNAME="Install BAR Launcher"
 rm -f "$DMG"
 DMGROOT=$(mktemp -d)
 cp -R "$APP" "$DMGROOT/"
 ln -s /Applications "$DMGROOT/Applications"
 mkdir "$DMGROOT/.background"
 cp "$PKG/dmg-background.png" "$DMGROOT/.background/background.png"
-cp "$PKG/AppIcon.icns" "$DMGROOT/.VolumeIcon.icns"
+cp "$PKG/DMGIcon.icns" "$DMGROOT/.VolumeIcon.icns"   # installer icon (disc+arrow), distinct from the app
 
 # read-write image first so Finder can lay it out (positions/background live
 # in the volume's .DS_Store), then compress to the shipping UDZO
@@ -508,10 +535,28 @@ hdiutil convert "$RWDMG" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/nul
 rm -f "$RWDMG"
 if [ "$IDENTITY" != "-" ]; then
   codesign --force --timestamp -s "$IDENTITY" "$DMG"
-  if [ -n "$NOTARY_PROFILE" ]; then
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  if [ "${#NOTARY_AUTH[@]}" -gt 0 ]; then
+    xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait
     xcrun stapler staple "$DMG"
   fi
+fi
+# Brand the .dmg FILE icon. The .VolumeIcon.icns inside only brands the MOUNTED
+# disk; Finder shows the generic disk-image icon for the file itself until it
+# happens to thumbnail the volume icon. Attach the app icon to the file so it is
+# branded on sight. This is external metadata (resource fork + custom-icon bit),
+# so it does not touch the DMG bytes and the notarization staple stays valid.
+ICONSETTER="$(mktemp -d)/set-file-icon"
+cat > "${ICONSETTER}.swift" <<'SWIFT'
+import Cocoa
+let a = CommandLine.arguments
+guard a.count == 3, let img = NSImage(contentsOfFile: a[1]) else { exit(2) }
+exit(NSWorkspace.shared.setIcon(img, forFile: a[2], options: []) ? 0 : 1)
+SWIFT
+if swiftc -O "${ICONSETTER}.swift" -o "$ICONSETTER" 2>/dev/null \
+   && "$ICONSETTER" "$PKG/DMGIcon.icns" "$DMG"; then
+  echo "dmg icon: branded (file icon set)"
+else
+  echo "dmg icon: WARN could not set file icon (non-fatal)"
 fi
 echo "dmg: $DMG"
 fi   # PROFILE=bar
@@ -550,7 +595,7 @@ echo "profile:   $PROFILE"
 echo "artifact:  $APP"
 echo "bundles:   $ZIP"
 echo "           $DMG"
-echo "signing:   $([ "$IDENTITY" = "-" ] && echo "ad-hoc (local only)" || echo "Developer ID${NOTARY_PROFILE:+ + notarized}")"
+echo "signing:   $([ "$IDENTITY" = "-" ] && echo "ad-hoc (local only)" || echo "Developer ID$([ "${#NOTARY_AUTH[@]}" -gt 0 ] && echo " + notarized")")"
 echo "certified: $([ "$CERTIFIED" = "1" ] && echo "yes (replay determinism + GPU driver smoke)" || echo "NO (build/package tier only)")"
 if [ "$IDENTITY" != "-" ] && [ "$CERTIFIED" != "1" ]; then
   echo ""

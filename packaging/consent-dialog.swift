@@ -26,7 +26,17 @@ app.activate(ignoringOtherApps: true)
 // (focus may sit on another app when this separate process launches), so also
 // raise the panel above normal windows and let it show on the active Space
 // (even over a fullscreen game). Used for both the notice and the gate.
+// BAR app icon instead of the generic executable/folder icon.
+func barIcon() -> NSImage? {
+    if let p = ProcessInfo.processInfo.environment["BAR_ICON_PATH"],
+       let i = NSImage(contentsOfFile: p) { return i }
+    let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    return NSImage(contentsOf: exe.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Resources/AppIcon.icns"))
+}
+
 func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
+    if let icon = barIcon() { alert.icon = icon }
     let w = alert.window
     w.level = .floating
     w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
