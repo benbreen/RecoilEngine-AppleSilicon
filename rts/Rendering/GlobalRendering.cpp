@@ -775,10 +775,14 @@ SDL_Window* CGlobalRendering::CreateSDLWindow(const char* title) const
 #if defined(__APPLE__) && !defined(HEADLESS)
 	// On macOS keep windowed mode bordered (title bar + window controls)
 	// regardless of WindowBorderless, which the Chobby lobby forces on at
-	// runtime. Fullscreen is unaffected (borderless still selects desktop vs
-	// exclusive there).
-	if (!fullScreen_)
-		borderless_ = false;
+	// runtime — EXCEPT when the borderless window is desktop-sized: that is
+	// BAR's actual "Fullscreen" mode (Fullscreen=0 + WindowBorderless=1 +
+	// desktop-sized window); bordering it turns fullscreen into a window.
+	if (!fullScreen_ && borderless_) {
+		const int2 maxRes_ = GetMaxWinRes();
+		if (newRes.x < maxRes_.x || newRes.y < maxRes_.y)
+			borderless_ = false;
+	}
 #endif
 
 	// note:
@@ -1958,9 +1962,15 @@ void CGlobalRendering::SetWindowAttributes(SDL_Window* window)
 
 #if defined(__APPLE__) && !defined(HEADLESS)
 	// Keep windowed mode bordered on macOS even when Chobby sets WindowBorderless
-	// at runtime (this path runs on its ConfigNotify). Fullscreen unaffected.
-	if (!fullScreen)
-		borderless = false;
+	// at runtime (this path runs on its ConfigNotify) — except when the borderless
+	// window is desktop-sized: that is BAR's "Fullscreen" mode (Fullscreen=0 +
+	// WindowBorderless=1 + desktop-sized window); bordering it breaks fullscreen.
+	if (!fullScreen && borderless) {
+		const int2 cfgRes_ = GetCfgWinRes();
+		const int2 maxRes_ = GetMaxWinRes();
+		if (cfgRes_.x < maxRes_.x || cfgRes_.y < maxRes_.y)
+			borderless = false;
+	}
 #endif
 	winPosX = configHandler->GetInt("WindowPosX");
 	winPosY = configHandler->GetInt("WindowPosY");
