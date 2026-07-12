@@ -1,12 +1,30 @@
-# Beyond All Reason — for macOS (Apple Silicon)
+# recoil-apple — the Recoil engine, native on macOS (Apple Silicon)
 
 <p align="center">
-  <a href="https://github.com/benbreen/BeyondAllReason-Apple/releases/latest"><img src="https://img.shields.io/github/v/release/benbreen/BeyondAllReason-Apple?logo=apple&label=download&color=1793d1" alt="Latest release"></a>
+  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><img src="https://img.shields.io/github/v/release/benbreen/recoil-apple?logo=apple&label=download&color=1793d1" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple" alt="macOS · Apple Silicon">
-  <a href="https://github.com/benbreen/BeyondAllReason-Apple/releases"><img src="https://img.shields.io/github/downloads/benbreen/BeyondAllReason-Apple/total?color=44cc11" alt="Downloads"></a>
+  <a href="https://github.com/benbreen/recoil-apple/releases"><img src="https://img.shields.io/github/downloads/benbreen/recoil-apple/total?color=44cc11" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/license-GPL--2.0-blue" alt="License: GPL-2.0">
   <img src="https://img.shields.io/badge/built%20on-Recoil-orange" alt="Built on the Recoil engine">
 </p>
+
+A native Apple Silicon port of the **[Recoil](https://github.com/beyond-all-reason/RecoilEngine)**
+RTS engine, packaged and configured to download and run
+**[Beyond All Reason](https://www.beyondallreason.info/)** — so you can play
+BAR on a Mac, no Rosetta, no virtual machine, with full graphics and full
+online multiplayer against Windows and Linux players in the same lobbies.
+
+> **Unofficial project.** This is an independent community port — it is not
+> affiliated with, endorsed by, or supported by the Recoil engine team or the
+> Beyond All Reason project. Please report issues with this port **here**, not
+> to them.
+>
+> **No game content is hosted here.** This repository and its releases contain
+> only the engine (GPL-2.0) and this port's packaging. The game itself — its
+> units, art, sounds, and maps, which are under
+> [BAR's own licenses](https://github.com/beyond-all-reason/Beyond-All-Reason/blob/master/LICENSE.md)
+> — is downloaded by the app on first launch from BAR's official content
+> network, exactly as the official launcher does.
 
 > ⚡️ **A Claude Fable port.** The macOS layer in this repository was built
 > largely by **[Claude Fable](https://www.anthropic.com)** (Anthropic's Claude
@@ -14,7 +32,7 @@
 > [What this project did](#what-this-project-did).
 
 <p align="center">
-  <a href="https://github.com/benbreen/BeyondAllReason-Apple/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
+  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
   &nbsp;·&nbsp; requires an Apple Silicon Mac on macOS 26+
 </p>
 
@@ -23,19 +41,14 @@
   <br><em>Beyond All Reason running natively on an Apple Silicon Mac.</em>
 </p>
 
-**[Beyond All Reason](https://www.beyondallreason.info/) is a free, open-source
-real-time strategy game. This project lets you play it natively on Apple Silicon
-Macs** — no Rosetta, no virtual machine — with full graphics and full online
-multiplayer against Windows and Linux players in the same lobbies.
-
-The game runs on the [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine)
-— the program that actually runs the game: its simulation, graphics, and
-networking. The engine ships for Windows and Linux; this repository is a native
-macOS build of it, delivered as a signed, notarized `.app` you download and open
-like any other Mac app. Under the hood it renders through Apple's Metal
+The [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine) is the
+program that actually runs the game: its simulation, graphics, and networking.
+The engine ships for Windows and Linux; this repository is a native macOS build
+of it, delivered as a signed, notarized `.app` you download and open like any
+other Mac app. Under the hood it renders through Apple's Metal
 (OpenGL 4.6 → Mesa Zink → [KosmicKrisp](https://lunarg.com/kosmickrisp/) →
 Metal) and simulates bit-identically to the official builds, so Mac players
-share the same ranked matches and replays as everyone else. Pinned to engine
+share the same matches and replays as everyone else. Pinned to engine
 version **2025.06.24**, the version the live fleet runs.
 
 ## What this project did
@@ -266,7 +279,18 @@ This port stands on a lot of prior work, gratefully:
 source for every shipped binary is this repository plus the pinned/patched
 dependency set documented in the release notes.
 
+Beyond All Reason's game content (units, art, sounds, music, maps) is **not
+part of this repository or its releases** and is licensed separately by the
+BAR project ([their LICENSE.md](https://github.com/beyond-all-reason/Beyond-All-Reason/blob/master/LICENSE.md)
+— GPL-2.0 for game code; most art under CC-BY-NC-ND-4.0 and other restricted
+terms). The app downloads it from BAR's official content network at first
+launch.
+
 ## Reporting issues
+
+This is an unofficial port: please report problems **on this repository's
+issue tracker**, not to the Recoil or BAR projects — a bug here is most likely
+this port's fault, and their trackers shouldn't carry our noise.
 
 Open a GitHub issue with your `infolog.txt` (it includes the one-line
 driver-identity print so we can see which GL stack actually loaded). For
