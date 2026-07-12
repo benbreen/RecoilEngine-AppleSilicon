@@ -1,0 +1,61 @@
+# Bundle license manifest — one row per shipped binary/dylib (or vendored-in
+# static component). license-audit.sh asserts every Mach-O in the bundle maps
+# to a row here and that the referenced license text is present in LICENSES/.
+# Columns: artifact-pattern <TAB> component <TAB> license <TAB> obligations
+# artifact-pattern matches the basename inside the .app bundle.
+spring	Recoil engine (this fork)	GPL-2.0-or-later	Full corresponding source published (fork repo); COPYING shipped; source-availability notice in app
+spring-headless	Recoil engine (this fork)	GPL-2.0-or-later	Same as spring
+pr-downloader*	pr-downloader (engine tree)	GPL-2.0-or-later	Same as spring
+libEGL*.dylib	Mesa (Zink)	MIT	License text shipped
+libgallium*.dylib	Mesa (Zink + gallium)	MIT	License text shipped
+libvulkan_kosmickrisp.dylib	Mesa (KosmicKrisp; LunarG/Google)	MIT	License text shipped
+libvulkan.1.dylib	Khronos Vulkan-Loader	Apache-2.0	License text shipped
+libGLESv*.dylib	Mesa	MIT	License text shipped
+libSDL2*.dylib	SDL2	Zlib	License text shipped
+libopenal*.dylib	openal-soft	LGPL-2.1-or-later	DYNAMIC link only (never static); text shipped; relink rights stated in NOTICE
+libfreetype*.dylib	FreeType	FTL (BSD-style, credit required)	Text shipped; credit in NOTICE
+libfontconfig*.dylib	Fontconfig	MIT-style (Fontconfig license)	Text shipped
+libIL*.dylib	DevIL	LGPL-2.1-or-later	DYNAMIC link only; text shipped; relink rights in NOTICE
+libogg*.dylib	libogg (Xiph)	BSD-3-Clause	Text shipped
+libvorbis*.dylib	libvorbis (Xiph)	BSD-3-Clause	Text shipped
+libvorbisfile*.dylib	libvorbis (Xiph)	BSD-3-Clause	Text shipped
+libminizip*.dylib	minizip (zlib contrib)	Zlib	Text shipped
+libzstd*.dylib	zstd	BSD-3-Clause (or GPL-2.0 dual)	Text shipped
+libSPIRV-Tools*.dylib	SPIRV-Tools	Apache-2.0	Text shipped
+libcurl*.dylib	curl	curl (MIT-like)	Text shipped (only if bundled; system curl exempt)
+# --- statically vendored inside the engine binary (informational; GPL
+# compatibility verified; individual texts shipped in LICENSES/vendored/) ---
+#static	Lua 5.x	MIT
+#static	streflop	LGPL-2.1 (vendored by upstream engine under GPL-compat terms)
+#static	assimp	BSD-3-Clause
+#static	fastgltf	MIT
+#static	RmlUi	MIT
+#static	simdjson	Apache-2.0
+#static	tracy client (ON_DEMAND, matches official releases)	BSD-3-Clause
+#static	sse2neon	MIT
+#static	entt	MIT
+#static	{fmt}	MIT (with exception)
+#static	cereal	BSD-3-Clause
+#static	smmalloc	MIT
+#static	lunasvg	MIT
+#static	luasocket	MIT
+#static	gflags	BSD-3-Clause
+#static	asio	Boost-1.0
+#static	readerwriterqueue	BSD-2 (simplified)
+#static	jsoncpp	MIT/public-domain dual
+#static	7-Zip SDK (pr-downloader)	LZMA SDK (public domain)
+#static	zlib	Zlib
+# --- content ---
+#content	FreeSansBold + engine fonts (basecontent)	GPL with font exception / OFL — verify per font file at bundle time
+#content	BAR game content	NOT DISTRIBUTED — downloaded from official BAR CDN at first run
+libpng*.dylib	libpng (DevIL dep)	libpng-2.0	Text shipped (image-codecs collection)
+libjpeg*.dylib	libjpeg-turbo (DevIL dep)	IJG/BSD-3 (jpeg-turbo)	Text shipped (image-codecs collection)
+libtiff*.dylib	libtiff (DevIL dep)	libtiff (MIT-style)	Text shipped (image-codecs collection)
+libwebp*.dylib	libwebp (libtiff dep; Google)	libwebp (BSD-3-Clause)	Text shipped (image-codecs collection)
+libsharpyuv*.dylib	libsharpyuv (webp package; Google)	libwebp (BSD-3-Clause)	Text shipped (image-codecs collection)
+liblcms2*.dylib	Little-CMS2 (DevIL dep)	MIT	Text shipped (image-codecs collection)
+libjasper*.dylib	JasPer (DevIL dep)	JasPer-2.0 (MIT-style)	Text shipped (image-codecs collection)
+liblzma*.dylib	xz liblzma (libtiff dep)	0BSD	Text shipped (image-codecs collection)
+libintl*.dylib	gettext runtime (fontconfig dep)	LGPL-2.1	DYNAMIC link only; text shipped; relink rights in NOTICE
+progress-window	BAR macOS port (first-run progress UI)	GPL-2.0-or-later	Part of this project; source in packaging/
+error-dialog	BAR macOS port (error dialog UI)	GPL-2.0-or-later	Part of this project; source in packaging/

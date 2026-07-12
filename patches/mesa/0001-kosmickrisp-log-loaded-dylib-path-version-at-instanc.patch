@@ -1,0 +1,55 @@
+From c6724377a51a447b806b56344fae0d603e806cc7 Mon Sep 17 00:00:00 2001
+From: benbreen <8338320+benbreen@users.noreply.github.com>
+Date: Fri, 10 Jul 2026 22:25:39 +0100
+Subject: [PATCH 1/4] kosmickrisp: log loaded dylib path + version at instance
+ creation
+
+Downstream-only patch (not proposed upstream). This driver is distributed
+project-locally and loaded via VK_ICD_FILENAMES / DYLD_* env vars, so a
+silent fallback to another installed Vulkan driver (e.g. MoltenVK from a
+package manager) would invalidate results without any error. One always-on
+line at vkCreateInstance makes the loaded copy auditable in every log:
+
+  KOSMICKRISP_LOADED version=<mesa version+sha> path=<dylib path>
+---
+ src/kosmickrisp/vulkan/kk_instance.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/kosmickrisp/vulkan/kk_instance.c b/src/kosmickrisp/vulkan/kk_instance.c
+index 90abd528..677bf404 100644
+--- a/src/kosmickrisp/vulkan/kk_instance.c
++++ b/src/kosmickrisp/vulkan/kk_instance.c
+@@ -20,6 +20,11 @@
+ #include "util/mesa-blake3.h"
+ #include "util/u_debug.h"
+ 
++#include "git_sha1.h"
++
++#include <dlfcn.h>
++#include <stdio.h>
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_EnumerateInstanceVersion(uint32_t *pApiVersion)
+ {
+@@ -137,6 +142,18 @@ kk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
+ 
+    kk_process_debug_variable();
+ 
++   /* Project-local driver builds only reach the process through env vars
++    * (VK_ICD_FILENAMES / DYLD_*); log which dylib actually loaded so a
++    * silent fallback to another installed driver is visible in every log. */
++   {
++      Dl_info dl_info;
++      const char *path = "<unknown>";
++      if (dladdr((void *)kk_CreateInstance, &dl_info) && dl_info.dli_fname)
++         path = dl_info.dli_fname;
++      fprintf(stderr, "KOSMICKRISP_LOADED version=" PACKAGE_VERSION MESA_GIT_SHA1
++              " path=%s\n", path);
++   }
++
+    *pInstance = kk_instance_to_handle(instance);
+    return VK_SUCCESS;
+ 
+-- 
+2.50.1 (Apple Git-155)
+

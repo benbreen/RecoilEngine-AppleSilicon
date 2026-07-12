@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Release entitlements: network client for multiplayer + the content
+       downloader. Nothing else — no mic, no camera, no get-task-allow
+       (dev profiling uses scripts/sign-for-profiling.sh, never this file). -->
+  <key>com.apple.security.network.client</key><true/>
+  <!-- engine hosts LAN games (server socket) -->
+  <key>com.apple.security.network.server</key><true/>
+  <!-- hardened-runtime relaxations the GL-on-Metal stack needs: Mesa maps
+       JIT-less but SDL/driver dylibs load from the bundle via rpath -->
+  <key>com.apple.security.cs.disable-library-validation</key><false/>
+</dict>
+</plist>

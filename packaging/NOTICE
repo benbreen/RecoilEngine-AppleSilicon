@@ -1,0 +1,31 @@
+NOTICE — Beyond All Reason macOS port (engine bundle)
+
+This application is a build of the Recoil engine (GPL-2.0-or-later).
+Complete corresponding source code for the engine binary in this bundle,
+including all macOS modifications, is published at the project's GitHub
+repository (see the About dialog / README for the URL). The GPL license
+text ships in this bundle as COPYING.
+
+Graphics driver: this bundle includes Mesa (Zink and KosmicKrisp, MIT
+license), built from a pinned upstream Mesa commit plus a small published
+patch series (see patches/mesa/ in the packaging repository). KosmicKrisp
+is developed by LunarG and Google within upstream Mesa.
+
+Dynamically linked libraries and their licenses are enumerated in
+LICENSES/MANIFEST.tsv, with each license text in LICENSES/. In particular:
+
+- openal-soft and DevIL are LGPL-2.1: they are linked DYNAMICALLY only.
+  You may replace the bundled copies with your own builds (relink/substitute
+  as provided by LGPL §6): the dylibs live under Contents/Frameworks/ and
+  are located via standard @rpath resolution.
+- FreeType is used under the FreeType License (credit: portions of this
+  software are copyright © The FreeType Project, freetype.org).
+
+Game content (units, maps, sounds, the game itself) is NOT distributed with
+this application. On first run the app downloads Beyond All Reason content
+from the BAR project's official content network; that content is the BAR
+project's, under its own licenses.
+
+Code signing: the Developer ID signature on this bundle asserts the
+identity of the distributor only; it does not alter or supersede any
+license above.

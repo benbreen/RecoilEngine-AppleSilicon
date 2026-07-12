@@ -1,0 +1,96 @@
+From 3ac3ad1e5df2e56ee9aae14aafc3b8f7d2a7132d Mon Sep 17 00:00:00 2001
+From: benbreen <8338320+benbreen@users.noreply.github.com>
+Date: Fri, 10 Jul 2026 22:25:40 +0100
+Subject: [PATCH 2/4] kosmickrisp: KK_MATH_MODE knob (safe|relaxed|fast) +
+ KK_COMPILE_LOG
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+KK compiles MSL with MTLMathModeSafe + Precise float functions — correct
+for Vulkan conformance, but it inflates ALU and register pressure
+noticeably on real GL-through-zink content (measured on Beyond All Reason:
+1598 shader register-spill events in a 30s Metal System Trace; a large
+battle scene gained +60% fps with fast math, screenshot-identical output).
+GL clients that would run fast math on native drivers can now opt in via
+KK_MATH_MODE=fast|relaxed; the default remains safe.
+
+KK_COMPILE_LOG=1 additionally logs Metal source compiles slower than 5ms
+(mid-game pipeline creation shows up as frame hitches; this attributes
+them). Both knobs are read once, off by default, and add no cost unset.
+
+Candidate for an upstream Mesa MR (as a driconf option per review
+preference; the bridge layer stays util-free so this uses getenv).
+---
+ src/kosmickrisp/bridge/mtl_compiler.m | 39 +++++++++++++++++++++++++--
+ 1 file changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index 8690b49a..83dc26c6 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -5,8 +5,12 @@
+  */
+ 
+ #include "mtl_compiler.h"
++
++#import <QuartzCore/QuartzCore.h>
+ #include "mtl_format.h"
+ 
++#include <string.h>
++
+ #include <Metal/MTL4ComputePipeline.h>
+ #include <Metal/MTL4LibraryDescriptor.h>
+ #include <Metal/MTL4LibraryFunctionDescriptor.h>
+@@ -46,15 +50,46 @@
+        * dEQP-VK.spirv_assembly.instruction.graphics.float16.logical.opisnan_vector_vert
+        * on M1/2 */
+       opts.languageVersion = MTLLanguageVersion3_2;
+-      opts.mathMode = MTLMathModeSafe;
+-      opts.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
++      /* KK_MATH_MODE=fast|relaxed: GL-through-zink tolerates relaxed FP
++       * (native GL drivers effectively run fast math); Safe+Precise inflates
++       * ALU and register pressure (measured: 1598 spill events / 767KB in a
++       * 30s BAR trace). Default stays Safe for Vulkan conformance. */
++      static int math_mode = -1;
++      if (math_mode == -1) {
++         const char *mm = getenv("KK_MATH_MODE");
++         if (mm && strcmp(mm, "fast") == 0)
++            math_mode = 2;
++         else if (mm && strcmp(mm, "relaxed") == 0)
++            math_mode = 1;
++         else
++            math_mode = 0;
++      }
++      opts.mathMode = math_mode == 2   ? MTLMathModeFast
++                      : math_mode == 1 ? MTLMathModeRelaxed
++                                       : MTLMathModeSafe;
++      opts.mathFloatingPointFunctions = math_mode
++         ? MTLMathFloatingPointFunctionsFast
++         : MTLMathFloatingPointFunctionsPrecise;
+ 
+       MTL4LibraryDescriptor *desc = [[MTL4LibraryDescriptor new] autorelease];
+       desc.source = ns_src;
+       desc.options = opts;
+ 
+       NSError *error;
++      /* KK_COMPILE_LOG=1: log slow Metal source compiles (mid-game pipeline
++       * creation = frame hitch; correlate with fps dips) */
++      static int compile_log = -1;
++      if (compile_log == -1)
++         compile_log = (getenv("KK_COMPILE_LOG") != NULL);
++      double t0 = compile_log ? CACurrentMediaTime() : 0.0;
+       id<MTLLibrary> lib = [comp newLibraryWithDescriptor:desc error:&error];
++      if (compile_log) {
++         double ms = (CACurrentMediaTime() - t0) * 1e3;
++         static double total_ms; static unsigned long n;
++         total_ms += ms; n++;
++         if (ms > 5.0)
++            fprintf(stderr, "KK_COMPILE slow=%.1fms total=%.0fms n=%lu\n", ms, total_ms, n);
++      }
+ 
+       if (lib == nil) {
+          fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
+-- 
+2.50.1 (Apple Git-155)
+
