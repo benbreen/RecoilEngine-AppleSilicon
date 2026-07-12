@@ -14,6 +14,7 @@
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include "System/Platform/Mac/MetalPresent.h"
+#include "System/Log/ILog.h"
 
 // step-by-step bootstrap tracing; errors and the one-line summaries below
 // stay in all builds
@@ -183,11 +184,11 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
     if (pxW <= 0 || pxH <= 0) { pxW = 1280; pxH = 720; }
     g_pbufW = pxW;
     g_pbufH = pxH;
-    fprintf(stderr, "[EGL] window %dx%d pts * %.2f scale -> pbuffer %dx%d px%s\n",
+    LOG("[EGL] window %dx%d pts * %.2f scale -> pbuffer %dx%d px%s",
             winW, winH, bsf, pxW, pxH,
-            noRetina ? " (SPRING_MAC_NO_RETINA=1; native scale was " : "");
+            noRetina ? " (SPRING_MAC_NO_RETINA=1)" : "");
     if (noRetina)
-        fprintf(stderr, "      (true backing scale=%.2f; CoreAnimation will upscale)\n", bsfTrue);
+        LOG("[EGL] true backing scale=%.2f; CoreAnimation will upscale", bsfTrue);
 
     if (nativeView) {
         g_eglSurface = eglCreateWindowSurface(g_eglDisplay, eglConfig, (EGLNativeWindowType)nativeView, NULL);
@@ -242,9 +243,9 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
             if (g_eglContext != EGL_NO_CONTEXT)
                 break;
         }
-        fprintf(stderr, g_eglContext != EGL_NO_CONTEXT
-            ? "[EGL] COMPAT profile context obtained.\n"
-            : "[EGL] COMPAT profile unavailable; falling back to CORE.\n");
+        LOG("%s", g_eglContext != EGL_NO_CONTEXT
+            ? "[EGL] COMPAT profile context obtained."
+            : "[EGL] COMPAT profile unavailable; falling back to CORE.");
     }
 
     EGLint contextAttribs[] = {
@@ -292,7 +293,7 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
 
     // Set up the manual present path now that the layer + context exist.
     if (!MacMetalPresent_Init(g_metalLayer))
-        fprintf(stderr, "[EGL] MacMetalPresent_Init failed; window will not show frames\n");
+        LOG_L(L_ERROR, "[EGL] MacMetalPresent_Init failed; window will not show frames");
 
     return true;
 }
@@ -346,13 +347,13 @@ static void ResizeEGLSurfaceIfNeeded(SDL_Window* window) {
     EGLint pbAttribs[] = { EGL_WIDTH, pxW, EGL_HEIGHT, pxH, EGL_NONE };
     EGLSurface newSurface = eglCreatePbufferSurface(g_eglDisplay, g_eglConfig, pbAttribs);
     if (newSurface == EGL_NO_SURFACE) {
-        fprintf(stderr, "[EGL] resize: eglCreatePbufferSurface %dx%d failed (0x%x); keeping %dx%d\n",
+        LOG_L(L_WARNING, "[EGL] resize: eglCreatePbufferSurface %dx%d failed (0x%x); keeping %dx%d",
                 pxW, pxH, eglGetError(), g_pbufW, g_pbufH);
         return; // keep the old surface rather than lose the context
     }
 
     if (!eglMakeCurrent(g_eglDisplay, newSurface, newSurface, g_eglContext)) {
-        fprintf(stderr, "[EGL] resize: eglMakeCurrent failed (0x%x); reverting\n", eglGetError());
+        LOG_L(L_WARNING, "[EGL] resize: eglMakeCurrent failed (0x%x); reverting", eglGetError());
         eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
         eglDestroySurface(g_eglDisplay, newSurface);
         return;
@@ -363,7 +364,7 @@ static void ResizeEGLSurfaceIfNeeded(SDL_Window* window) {
     g_eglSurface = newSurface;
     g_pbufW = pxW;
     g_pbufH = pxH;
-    fprintf(stderr, "[EGL] resize: pbuffer -> %dx%d px (window %dx%d * %.2f)\n", pxW, pxH, winW, winH, bsf);
+    LOG("[EGL] resize: pbuffer -> %dx%d px (window %dx%d * %.2f)", pxW, pxH, winW, winH, bsf);
 }
 #endif // __APPLE__ && !HEADLESS
 
