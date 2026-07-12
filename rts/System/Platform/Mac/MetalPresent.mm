@@ -27,11 +27,20 @@ static std::vector<uint8_t> g_flipBuf;
 // IOSurface base address via glReadPixels (no CPU intermediate buffer, no
 // CPU-side Y flip, no replaceRegion upload). A small render pipeline samples
 // the IOSurface-backed texture and writes it Y-flipped to the drawable.
-static IOSurfaceRef               g_ioSurface       = nullptr;
-static id<MTLTexture>             g_ioTexture       = nil;
+// Double-buffered: main thread writes slot A while the async present of
+// slot B is still in flight. nextDrawable can block ~1.5 vsync (measured
+// 12ms — it paced light scenes to exactly 60 on the 120Hz panel), so the
+// whole present runs on a serial queue off the main thread.
+#define IO_SLOTS 2
+static IOSurfaceRef               g_ioSurface[IO_SLOTS] = { nullptr, nullptr };
+static id<MTLTexture>             g_ioTexture[IO_SLOTS] = { nil, nil };
+static int                        g_ioCur           = 0;   // slot main writes
 static int                        g_ioW             = 0;
 static int                        g_ioH             = 0;
 static bool                       g_ioLocked        = false;
+static dispatch_queue_t           g_presentQueue    = nil;
+static dispatch_semaphore_t       g_presentBudget   = nil; // max queued presents
+static uint64_t                   g_presentSkips    = 0;
 static id<MTLRenderPipelineState> g_presentPSO      = nil;
 static id<MTLRenderPipelineState> g_presentPSO_flip = nil;
 static id<MTLSamplerState>        g_linearSampler   = nil;
@@ -140,6 +149,10 @@ bool MacMetalPresent_Init(void* caMetalLayer)
 	g_layer.device          = g_device;
 	g_layer.pixelFormat     = MTLPixelFormatBGRA8Unorm;
 	g_layer.framebufferOnly  = NO; // allow the drawable to be a blit destination
+	// nextDrawable was pacing light scenes to exactly refresh/2 (60 on the
+	// 120Hz panel, metal-submit ~12ms): make the pool depth explicit.
+	// displaySync stays ON — this only deepens buffering, never tears.
+	g_layer.maximumDrawableCount = 3;
 	return true;
 }
 
@@ -203,15 +216,18 @@ void MacMetalPresent_PresentBGRA(int w, int h, const void* pixels, bool flipY)
 
 static void ReleaseIOSurfaceBacking()
 {
-    if (g_ioLocked && g_ioSurface) {
-        IOSurfaceUnlock(g_ioSurface, 0, nullptr);
+    if (g_ioLocked && g_ioSurface[g_ioCur]) {
+        IOSurfaceUnlock(g_ioSurface[g_ioCur], 0, nullptr);
         g_ioLocked = false;
     }
-    g_ioTexture = nil; // autoreleased
-    if (g_ioSurface) {
-        CFRelease(g_ioSurface);
-        g_ioSurface = nullptr;
+    for (int i = 0; i < IO_SLOTS; ++i) {
+        g_ioTexture[i] = nil; // autoreleased
+        if (g_ioSurface[i]) {
+            CFRelease(g_ioSurface[i]);
+            g_ioSurface[i] = nullptr;
+        }
     }
+    g_ioCur = 0;
     g_ioW = 0;
     g_ioH = 0;
 }
@@ -228,7 +244,7 @@ extern "C" void MacMetalPresent_SetSourceRGBA(int rgba)
 
 static bool EnsureIOSurfaceBacking(int w, int h)
 {
-    if (g_ioSurface && g_ioW == w && g_ioH == h && g_ioIsRGBA == g_ioSrcRGBA)
+    if (g_ioSurface[0] && g_ioW == w && g_ioH == h && g_ioIsRGBA == g_ioSrcRGBA)
         return true;
 
     ReleaseIOSurfaceBacking();
@@ -239,12 +255,6 @@ static bool EnsureIOSurfaceBacking(int w, int h)
         (id)kIOSurfaceBytesPerElement: @(4),
         (id)kIOSurfacePixelFormat:     @((uint32_t)(g_ioSrcRGBA ? 'RGBA' : 'BGRA')),
     };
-    g_ioSurface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
-    if (g_ioSurface == nullptr) {
-        fprintf(stderr, "[MetalPresent] IOSurfaceCreate failed (%dx%d)\n", w, h);
-        return false;
-    }
-
     MTLTextureDescriptor* d =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(g_ioSrcRGBA ? MTLPixelFormatRGBA8Unorm
                                                                               : MTLPixelFormatBGRA8Unorm)
@@ -253,13 +263,26 @@ static bool EnsureIOSurfaceBacking(int w, int h)
                                                        mipmapped:NO];
     d.usage = MTLTextureUsageShaderRead;
     d.storageMode = MTLStorageModeShared;
-    g_ioTexture = [g_device newTextureWithDescriptor:d iosurface:g_ioSurface plane:0];
-    if (g_ioTexture == nil) {
-        fprintf(stderr, "[MetalPresent] newTextureWithDescriptor:iosurface: failed\n");
-        ReleaseIOSurfaceBacking();
-        return false;
+    for (int i = 0; i < IO_SLOTS; ++i) {
+        g_ioSurface[i] = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+        if (g_ioSurface[i] == nullptr) {
+            fprintf(stderr, "[MetalPresent] IOSurfaceCreate failed (%dx%d)\n", w, h);
+            ReleaseIOSurfaceBacking();
+            return false;
+        }
+        g_ioTexture[i] = [g_device newTextureWithDescriptor:d iosurface:g_ioSurface[i] plane:0];
+        if (g_ioTexture[i] == nil) {
+            fprintf(stderr, "[MetalPresent] newTextureWithDescriptor:iosurface: failed\n");
+            ReleaseIOSurfaceBacking();
+            return false;
+        }
+    }
+    if (g_presentQueue == nil) {
+        g_presentQueue  = dispatch_queue_create("spring.mac.present", DISPATCH_QUEUE_SERIAL);
+        g_presentBudget = dispatch_semaphore_create(2);
     }
 
+    g_ioCur = 0;
     g_ioW = w;
     g_ioH = h;
     g_ioIsRGBA = g_ioSrcRGBA;
@@ -296,55 +319,79 @@ void* MacMetalPresent_AcquireIOSurfaceBuffer(int w, int h, size_t* outRowBytes)
 
     static bool s_loggedOnce = false;
     if (!s_loggedOnce) {
-        fprintf(stderr, "[MetalPresent] IOSurface zero-copy path active (%dx%d, rowBytes=%zu)\n",
-                w, h, IOSurfaceGetBytesPerRow(g_ioSurface));
+        fprintf(stderr, "[MetalPresent] IOSurface zero-copy path active (%dx%d, rowBytes=%zu, slots=%d)\n",
+                w, h, IOSurfaceGetBytesPerRow(g_ioSurface[0]), IO_SLOTS);
         s_loggedOnce = true;
     }
 
-    // Acquire CPU access. AVERTING_PRECEDENT_DEADLOCK: the previous frame's
-    // Metal command buffer may still hold a GPU reference to the surface;
-    // IOSurfaceLock blocks until that read is retired.
-    if (IOSurfaceLock(g_ioSurface, 0, nullptr) != kIOReturnSuccess) {
+    // Write into the slot the async present is NOT reading. The IOSurfaceLock
+    // only blocks if the present-before-last still holds a GPU reference —
+    // i.e., backpressure begins at 2 frames of present pipelining.
+    if (IOSurfaceLock(g_ioSurface[g_ioCur], 0, nullptr) != kIOReturnSuccess) {
         fprintf(stderr, "[MetalPresent] IOSurfaceLock failed\n");
         return nullptr;
     }
     g_ioLocked = true;
 
-    const size_t rb = IOSurfaceGetBytesPerRow(g_ioSurface);
+    const size_t rb = IOSurfaceGetBytesPerRow(g_ioSurface[g_ioCur]);
     if (outRowBytes) *outRowBytes = rb;
-    return IOSurfaceGetBaseAddress(g_ioSurface);
+    return IOSurfaceGetBaseAddress(g_ioSurface[g_ioCur]);
 }
 
 void MacMetalPresent_PresentIOSurface(bool flipY)
 {
     if (g_device == nil || g_queue == nil || g_layer == nil)
         return;
-    if (g_ioSurface == nullptr || g_ioTexture == nil)
+    if (g_ioSurface[g_ioCur] == nullptr || g_ioTexture[g_ioCur] == nil)
         return;
 
     if (g_ioLocked) {
-        IOSurfaceUnlock(g_ioSurface, 0, nullptr);
+        IOSurfaceUnlock(g_ioSurface[g_ioCur], 0, nullptr);
         g_ioLocked = false;
     }
 
-    id<CAMetalDrawable> drawable = [g_layer nextDrawable];
-    if (drawable == nil) {
-        fprintf(stderr, "[MetalPresent] nextDrawable returned nil — frame not presented\n");
+    // At most 2 presents queued: if the budget is exhausted the compositor is
+    // behind by two full frames — drop THIS present (the next one shows newer
+    // content anyway; content is never torn because each present reads its
+    // own slot). This keeps the main thread from ever blocking in
+    // nextDrawable (measured 12ms there = a hard 60fps cap on light scenes).
+    if (dispatch_semaphore_wait(g_presentBudget, DISPATCH_TIME_NOW) != 0) {
+        g_presentSkips++;
+        if ((g_presentSkips & (g_presentSkips - 1)) == 0) // log 1,2,4,8,...
+            fprintf(stderr, "[MetalPresent] dropped present (compositor 2 behind) x%llu\n",
+                    (unsigned long long)g_presentSkips);
+        g_ioCur = (g_ioCur + 1) % IO_SLOTS;
         return;
     }
 
-    MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
-    rpd.colorAttachments[0].texture     = drawable.texture;
-    rpd.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
-    rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLTexture> tex = g_ioTexture[g_ioCur];
+    id<MTLRenderPipelineState> pso = flipY ? g_presentPSO_flip : g_presentPSO;
+    dispatch_async(g_presentQueue, ^{
+        id<CAMetalDrawable> drawable = [g_layer nextDrawable];
+        if (drawable == nil) {
+            fprintf(stderr, "[MetalPresent] nextDrawable returned nil — frame not presented\n");
+            dispatch_semaphore_signal(g_presentBudget);
+            return;
+        }
 
-    id<MTLCommandBuffer> cb = [g_queue commandBuffer];
-    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
-    [enc setRenderPipelineState:flipY ? g_presentPSO_flip : g_presentPSO];
-    [enc setFragmentTexture:g_ioTexture atIndex:0];
-    [enc setFragmentSamplerState:g_linearSampler atIndex:0];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [enc endEncoding];
-    [cb presentDrawable:drawable];
-    [cb commit];
+        MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+        rpd.colorAttachments[0].texture     = drawable.texture;
+        rpd.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
+        rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
+        [enc setRenderPipelineState:pso];
+        [enc setFragmentTexture:tex atIndex:0];
+        [enc setFragmentSamplerState:g_linearSampler atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [enc endEncoding];
+        [cb presentDrawable:drawable];
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull c) {
+            dispatch_semaphore_signal(g_presentBudget);
+        }];
+        [cb commit];
+    });
+
+    g_ioCur = (g_ioCur + 1) % IO_SLOTS;
 }
