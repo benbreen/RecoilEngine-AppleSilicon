@@ -9,6 +9,14 @@ ADD_SUBDIRECTORY(minizip)
 ADD_SUBDIRECTORY(headlessStubs)
 if (ENABLE_STREFLOP)
 ADD_SUBDIRECTORY(streflop)
+if (APPLE)
+	# Keep streflop objects native (non-bitcode) even when the rest of the
+	# engine builds with -flto=thin: (a) Apple ld chokes on bitcode archive
+	# members discovered late ("LTO files were loaded too late"), and (b) the
+	# sync-critical libm objects stay byte-comparable to the certified
+	# non-LTO configuration. Harmless no-op when LTO is off.
+	target_compile_options(streflop PRIVATE -fno-lto)
+endif ()
 endif ()
 
 SET(GFLAGS_BUILD_SHARED_LIBS          FALSE)
