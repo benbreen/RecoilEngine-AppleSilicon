@@ -136,8 +136,21 @@ bool CLoadScreen::Init()
 	// the global font), the latter will cause problems in GL4
 	{
 		auto lock = CLoadLock::GetUniqueLock();
+		LOG("[LoadScreen::%s] LuaIntro block reached", __func__);
 #if defined(__APPLE__)
-		LOG("[LoadScreen::%s] skipping CLuaIntro (macOS EGL workaround)", __func__);
+		// The original macOS layer skipped CLuaIntro against an early EGL/Metal
+		// present incompatibility. The present path has since been rewritten
+		// (pbuffer -> IOSurface -> CAMetalLayer) and games run config bootstrap
+		// in LuaIntro (BAR: luaintro/springconfig.lua sets
+		// MaxTextureAtlasSizeX/Y=8192 and rendering defaults; skipping it broke
+		// atlas allocation). Escape hatch: SPRING_MAC_NO_LUAINTRO=1.
+		// NB: braces required — LOG() expands to a braceless `if`, a bare else
+		// here silently binds to it (dangling else) and skips the load call
+		if (getenv("SPRING_MAC_NO_LUAINTRO") != nullptr) {
+			LOG("[LoadScreen::%s] skipping CLuaIntro (SPRING_MAC_NO_LUAINTRO)", __func__);
+		} else {
+			CLuaIntro::LoadFreeHandler();
+		}
 #else
 		CLuaIntro::LoadFreeHandler();
 #endif

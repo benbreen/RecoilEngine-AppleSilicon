@@ -55,16 +55,20 @@ CLuaIntro::CLuaIntro()
 {
 	luaIntro = this;
 
-	if (!IsValid())
+	if (!IsValid()) {
+		LOG_L(L_WARNING, "[LuaIntro] handle invalid, intro disabled");
 		return;
+	}
 
 	const std::string file = "LuaIntro/main.lua";
 	std::string code = LoadFile(file);
 
 	if (code.empty()) {
+		LOG_L(L_WARNING, "[LuaIntro] \"%s\" missing or empty in VFS, intro disabled", file.c_str());
 		KillLua();
 		return;
 	}
+	LOG("[LuaIntro] loaded \"%s\" (%u bytes)", file.c_str(), (unsigned)code.size());
 
 	// load the standard libraries
 	LUA_OPEN_LIB(L, luaopen_base);
