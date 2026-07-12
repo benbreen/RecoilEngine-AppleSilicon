@@ -121,31 +121,30 @@ HELPER="$HERE/progress-window"
 
 if [ "${BAR_SKIP_CONTENT_CHECK:-0}" != "1" ]; then
   FIRST_RUN=1; [ -f "$DONE_SENTINEL" ] && FIRST_RUN=0
-  # First-run consent gate: the helper is about to download a game from a
-  # third-party network — the user must opt in explicitly (default = Quit).
-  # BAR_ASSUME_CONSENT=1 is for the build smokes/harness only.
-  if [ "$FIRST_RUN" = "1" ] && [ "${BAR_ASSUME_CONSENT:-0}" != "1" ]; then
-    if [ -x "$HERE/consent-dialog" ]; then
-      # server shown = the host download-content.sh actually fetches from
-      # (single source of truth; --print-server strips scheme/path)
-      CONTENT_SERVER="$("$RES/download-content.sh" --print-server 2>/dev/null)"
-      "$HERE/consent-dialog" --server "${CONTENT_SERVER:-the BAR content network}" || exit 0
-    fi
-  fi
-  # Online play disabled in this build (marker staged by release-build.sh
-  # unless --enable-online): tell the user on EVERY launch, including what
-  # they will see — the lobby opens on a sign-in screen that cannot connect;
-  # Cancel gets past it to everything that works offline.
-  if [ -f "$RES/.online-play-disabled" ] && [ "${BAR_ASSUME_CONSENT:-0}" != "1" ]; then
-    if [ -x "$HERE/consent-dialog" ]; then
-      "$HERE/consent-dialog" --notice "Online play is disabled in this build while we seek approval from the creators of Beyond All Reason to connect to their community servers.
+  # Startup dialogs, shown on EVERY launch and NOT gated on first-run/content
+  # state — the disclaimer is the legal opt-in and must never be skippable
+  # just because content already exists on disk. Order (user requirement):
+  #   1. ONLINE PLAY IS DISABLED notice (informational; OK)
+  #   2. disclaimer / consent gate (Quit default; Quit exits the app)
+  # BAR_ASSUME_CONSENT=1 skips both (build smokes/harness only).
+  if [ "${BAR_ASSUME_CONSENT:-0}" != "1" ] && [ -x "$HERE/consent-dialog" ]; then
+    # 1) online-play-disabled notice (only in builds that block online)
+    if [ -f "$RES/.online-play-disabled" ]; then
+      "$HERE/consent-dialog" --notice "ONLINE PLAY IS DISABLED in this build while I seek approval from the creators of Beyond All Reason to connect to their community servers.
 
 The game opens on a sign-in screen first — press Cancel to reach everything that works offline: skirmish against AI, replays, and local-network (LAN) games.
 
 If you do try to sign in or open an online menu, it will simply fail to reach the server — there is no in-game message explaining why, because online play is blocked outside the game, not inside it.
 
-A future update may enable online play." || true
+I hope online play can be enabled very soon." || true
     fi
+    # 2) disclaimer / consent gate — the app downloads a game from a
+    # third-party network and may auto-update it; the user must opt in every
+    # launch (default = Quit). server shown = the host download-content.sh
+    # actually fetches from (single source of truth; --print-server strips
+    # scheme/path).
+    CONTENT_SERVER="$("$RES/download-content.sh" --print-server 2>/dev/null)"
+    "$HERE/consent-dialog" --server "${CONTENT_SERVER:-the BAR content network}" || exit 0
   fi
   : > "$LOG"
   # Show the progress window immediately (fed via a fifo). If the helper is

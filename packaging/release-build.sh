@@ -97,6 +97,19 @@ MACOS="$APP/Contents/MacOS"
 RESOURCES="$APP/Contents/Resources"
 echo "profile: $PROFILE -> $(basename "$APP")"
 
+# Pre-flight: if this run will notarize, make sure the keychain profile
+# actually resolves NOW — a missing/expired credential otherwise wastes the
+# whole ~10-min build only to die at the notarize step (keychain items don't
+# always survive a relogin/keychain relock).
+if [ "$IDENTITY" != "-" ] && [ -n "$NOTARY_PROFILE" ]; then
+  xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 || {
+    echo "FATAL: notary profile '$NOTARY_PROFILE' does not resolve — re-store it:"
+    echo "  xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <id> --team-id <team> --password <app-specific-pw>"
+    exit 1
+  }
+  echo "notary profile '$NOTARY_PROFILE': OK"
+fi
+
 echo "=== [1/7] gated engine build ($SRC -> $BUILD)"
 ENGINE_SRC="$SRC" ENGINE_BUILD="$BUILD" MESA_PREFIX="$MESA_PREFIX" "$BAR/scripts/build-engine.sh"
 # build-engine.sh hard-fails unless the streflop archive reproduces the
