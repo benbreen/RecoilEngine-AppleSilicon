@@ -9,10 +9,19 @@
 </p>
 
 A native Apple Silicon port of the **[Recoil](https://github.com/beyond-all-reason/RecoilEngine)**
-RTS engine, packaged and configured to download and run
-**[Beyond All Reason](https://www.beyondallreason.info/)** — so you can play
-BAR on a Mac, no Rosetta, no virtual machine, with full graphics and full
-online multiplayer against Windows and Linux players in the same lobbies.
+RTS engine. It is not a game by itself — it lets Recoil/Spring games run on a
+Mac, no Rosetta, no virtual machine. The headline use is
+**[Beyond All Reason](https://www.beyondallreason.info/)**: an optional helper
+app downloads BAR's content from its official network and configures the
+engine to play it, with full graphics and full online multiplayer against
+Windows and Linux players in the same lobbies.
+
+**Two downloads** on the [releases page](https://github.com/benbreen/recoil-apple/releases/latest):
+
+| Artifact | What it is | For whom |
+|---|---|---|
+| `Recoil-macos-<engine>-port<ver>.zip` | The engine port alone: signed, notarized `spring`, `spring-headless`, and `pr-downloader` with the bundled Metal driver stack. No game content or configuration. | Any Recoil/Spring game community, tooling, or anyone building their own game helper on top. |
+| `BAR-macos-<ver>.dmg` | The engine **plus the BAR helper**: a drag-to-install app that downloads Beyond All Reason from BAR's official content network on first launch, keeps it updated, and launches straight into its lobby. | Players who want to play BAR on a Mac. |
 
 > **Unofficial project.** This is an independent community port — it is not
 > affiliated with, endorsed by, or supported by the Recoil engine team or the
@@ -32,7 +41,7 @@ online multiplayer against Windows and Linux players in the same lobbies.
 > [What this project did](#what-this-project-did).
 
 <p align="center">
-  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
+  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><b>⬇&nbsp; Download · play Beyond All Reason on your Mac</b></a>
   &nbsp;·&nbsp; requires an Apple Silicon Mac on macOS 26+
 </p>
 
@@ -42,14 +51,14 @@ online multiplayer against Windows and Linux players in the same lobbies.
 </p>
 
 The [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine) is the
-program that actually runs the game: its simulation, graphics, and networking.
-The engine ships for Windows and Linux; this repository is a native macOS build
-of it, delivered as a signed, notarized `.app` you download and open like any
-other Mac app. Under the hood it renders through Apple's Metal
+program that actually runs a game built on it: the simulation, graphics, and
+networking. The engine ships for Windows and Linux; this repository is a
+native macOS build of it. Under the hood it renders through Apple's Metal
 (OpenGL 4.6 → Mesa Zink → [KosmicKrisp](https://lunarg.com/kosmickrisp/) →
-Metal) and simulates bit-identically to the official builds, so Mac players
-share the same matches and replays as everyone else. Pinned to engine
-version **2025.06.24**, the version the live fleet runs.
+Metal) and simulates bit-identically to the official builds, so a Mac client
+shares the same matches and replays as everyone else. Pinned to engine
+version **2025.06.24**, the version BAR's live fleet runs; the screenshots
+and benchmarks throughout show the engine port running Beyond All Reason.
 
 ## What this project did
 
@@ -178,14 +187,16 @@ and [Homebrew](https://brew.sh) — the build installs the packages it needs
 (SDL2, LLVM 19 for the driver compile, openal-soft, …) as it goes.
 
 ```sh
-make app       # everything: pinned Mesa driver (cached after the first
-               # build) -> engine + determinism gates -> Beyond All
-               # Reason.app + .dmg (ad-hoc signed, local use)
-make certify   # same + full replay-determinism certification (GPU, ~1h)
-make release   # certified + Developer ID signed + notarized (needs
-               #   IDENTITY="Developer ID Application: ..." and
-               #   NOTARY_PROFILE=<notarytool keychain profile>)
-make engine    # just the engine binary, with the sync gates
+make app         # the BAR helper app: pinned Mesa driver (cached after the
+                 # first build) -> engine + determinism gates -> Beyond All
+                 # Reason.app + .dmg (ad-hoc signed, local use)
+make engine-dist # the Recoil engine alone (no BAR helper/branding):
+                 # Recoil-macos-<engine>-port<ver>.zip
+make certify     # app + full replay-determinism certification (GPU, ~1h)
+make release     # certified + Developer ID signed + notarized (needs
+                 #   IDENTITY="Developer ID Application: ..." and
+                 #   NOTARY_PROFILE=<notarytool keychain profile>)
+make engine      # just the engine binary, with the sync gates
 ```
 
 What the build does, in order: builds the Mesa Zink+KosmicKrisp driver from
