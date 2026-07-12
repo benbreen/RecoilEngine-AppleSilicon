@@ -138,7 +138,14 @@ bool CTextureAtlas::Finalize()
 	if (initialized && !reloadable)
 		return true;
 
-	const bool success = atlasAllocator->Allocate() && (initialized = CreateTexture());
+	const bool allocOK = atlasAllocator->Allocate();
+	const bool success = allocOK && (initialized = CreateTexture());
+
+	if (!success) {
+		const int2 as = atlasAllocator->GetAtlasSize();
+		LOG_L(L_ERROR, "[TextureAtlas::Finalize] atlas=\"%s\" allocOK=%d createOK=%d size=<%d,%d> pages=%u levels=%d maxTexSize=%d numMemTextures=%u",
+			name.c_str(), (int)allocOK, (int)initialized, as.x, as.y, atlasAllocator->GetNumPages(), atlasAllocator->GetNumTexLevels(), globalRendering->maxTextureSize, (unsigned)memTextures.size());
+	}
 
 	if (!reloadable) {
 		memTextures.clear();
