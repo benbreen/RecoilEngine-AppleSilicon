@@ -10,6 +10,18 @@
 #include "System/Misc/TracyDefs.h"
 
 
+#ifdef __APPLE__
+// see StreamBuffer.h — deeper default ring on the zink/KosmicKrisp stack
+const uint32_t IStreamBufferConcept::DEFAULT_NUM_BUFFERS = []() -> uint32_t {
+	if (const char* s = getenv("SPRING_MAC_STREAM_BUFFERING")) {
+		const int v = atoi(s);
+		if (v >= 2 && v <= 8)
+			return (uint32_t)v;
+	}
+	return 3u; // default unchanged: deeper rings measured FLAT here (dlist maps read the just-drawn slot); knob kept for experiments
+}();
+#endif
+
 //////////////////////////////////////////////////////////////////////
 
 

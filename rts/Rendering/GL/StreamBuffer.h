@@ -80,7 +80,16 @@ protected:
 	inline static bool reportType = false;
 	inline static std::vector<GLsync*> lockList = {};
 public:
+#ifdef __APPLE__
+	// zink/KosmicKrisp completions run 2-3 frames behind the CPU, so 3-deep
+	// stream rings still hit fence waits in Map() (and mesa's display-list
+	// recording of font/UI draws maps these buffers → batch_usage_wait ≈ 5%
+	// of the main thread in late-game scenes). 6 slots keeps mapped slots
+	// past the completion horizon. SPRING_MAC_STREAM_BUFFERING overrides.
+	static const uint32_t DEFAULT_NUM_BUFFERS;
+#else
 	static constexpr uint32_t DEFAULT_NUM_BUFFERS = 3;
+#endif
 };
 
 template<typename T>
