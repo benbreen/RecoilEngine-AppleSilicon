@@ -59,3 +59,4 @@ liblzma*.dylib	xz liblzma (libtiff dep)	0BSD	Text shipped (image-codecs collecti
 libintl*.dylib	gettext runtime (fontconfig dep)	LGPL-2.1	DYNAMIC link only; text shipped; relink rights in NOTICE
 progress-window	BAR macOS port (first-run progress UI)	GPL-2.0-or-later	Part of this project; source in packaging/
 error-dialog	BAR macOS port (error dialog UI)	GPL-2.0-or-later	Part of this project; source in packaging/
+consent-dialog	BAR macOS port (first-run consent UI)	GPL-2.0-or-later	Part of this project; source in packaging/

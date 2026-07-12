@@ -121,6 +121,17 @@ HELPER="$HERE/progress-window"
 
 if [ "${BAR_SKIP_CONTENT_CHECK:-0}" != "1" ]; then
   FIRST_RUN=1; [ -f "$DONE_SENTINEL" ] && FIRST_RUN=0
+  # First-run consent gate: the helper is about to download a game from a
+  # third-party network — the user must opt in explicitly (default = Quit).
+  # BAR_ASSUME_CONSENT=1 is for the build smokes/harness only.
+  if [ "$FIRST_RUN" = "1" ] && [ "${BAR_ASSUME_CONSENT:-0}" != "1" ]; then
+    if [ -x "$HERE/consent-dialog" ]; then
+      # server shown = the host download-content.sh actually fetches from
+      # (single source of truth; --print-server strips scheme/path)
+      CONTENT_SERVER="$("$RES/download-content.sh" --print-server 2>/dev/null)"
+      "$HERE/consent-dialog" --server "${CONTENT_SERVER:-the BAR content network}" || exit 0
+    fi
+  fi
   : > "$LOG"
   # Show the progress window immediately (fed via a fifo). If the helper is
   # missing/unrunnable, we degrade gracefully to a headless download + dialog.

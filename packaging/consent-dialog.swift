@@ -1,0 +1,38 @@
+// Recoil Engine — first-run consent dialog for the BAR helper.
+//
+// Shown once, before anything is downloaded: the helper is about to fetch a
+// game (Beyond All Reason) from a third-party content network, and the user
+// must explicitly opt in. "Quit" is the default (Return) so the safe choice
+// is the effortless one.
+//
+// Usage: consent-dialog --server <host>
+// Exit status: 0 = "Download and Run", 1 = "Quit" (or window closed).
+import AppKit
+
+func arg(_ name: String) -> String? {
+    let a = CommandLine.arguments
+    if let i = a.firstIndex(of: name), i + 1 < a.count { return a[i + 1] }
+    return nil
+}
+
+let server = arg("--server") ?? "the BAR content network"
+
+let app = NSApplication.shared
+app.setActivationPolicy(.regular)
+app.activate(ignoringOtherApps: true)
+
+let alert = NSAlert()
+alert.messageText = "Recoil Engine"
+alert.informativeText =
+    "Do you wish to download and run the game Beyond All Reason from \(server)?\n\n" +
+    "This game is not hosted or vetted by the maintainer of Recoil Engine for macOS, " +
+    "download and run this game AT YOUR OWN RISK!\n\n" +
+    "If you continue, future updates for the game may download and run " +
+    "automatically."
+alert.alertStyle = .warning
+// first button = default (Return). Quit is the safe default.
+alert.addButton(withTitle: "Quit")
+alert.addButton(withTitle: "Accept Risk and Run")
+
+let response = alert.runModal()
+exit(response == .alertSecondButtonReturn ? 0 : 1)

@@ -13,6 +13,8 @@
 #   make release        # Developer ID signed + notarized + CERTIFIED distributable
 #                       #   IDENTITY="Developer ID Application: NAME (TEAMID)" \
 #                       #   NOTARY_PROFILE=<keychain-profile> make release
+#   make engine-dist    # the Recoil engine port alone (no BAR helper/branding):
+#                       #   signed engine bundle -> Recoil-macos-<ver>-port<p>.zip
 #   make engine         # just the engine binary (no bundle) — build + sync gates
 #   make clean-artifacts# remove staged bundles/zips/dmgs
 #
@@ -32,7 +34,8 @@ VERSION_ARG := $(if $(VERSION),--version "$(VERSION)",)
 
 help:
 	@echo "macOS packaging (details: README.md 'Building the macOS app'):"
-	@echo "  make app       build + package -> release-artifacts/Beyond All Reason.app (+ .zip/.dmg)"
+	@echo "  make app       build + package the BAR helper app -> release-artifacts/Beyond All Reason.app (+ .zip/.dmg)"
+	@echo "  make engine-dist  package the Recoil engine alone (no BAR helper/branding) -> Recoil-macos-*.zip"
 	@echo "                 fast, headless-safe, ad-hoc signed (this Mac only)"
 	@echo "  make certify   app + replay-determinism cert + GPU driver smoke (needs an Apple Silicon Mac)"
 	@echo "  make release   Developer ID signed + notarized + certified distributable"
@@ -42,6 +45,9 @@ help:
 
 app:
 	packaging/release-build.sh $(VERSION_ARG)
+
+engine-dist:
+	packaging/release-build.sh --profile engine $(VERSION_ARG)
 
 certify:
 	packaging/release-build.sh --certify $(VERSION_ARG)

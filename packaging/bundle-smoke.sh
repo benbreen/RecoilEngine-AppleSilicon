@@ -48,6 +48,7 @@ env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH -u DYLD_INSERT_LIBRARIES 
     __CFBundleIdentifier=dev.bar-macos.engine \
     BAR_WRITEDIR_OVERRIDE="$WD" \
     BAR_CONTENT_SCOPE=lobby \
+    BAR_ASSUME_CONSENT=1 \
   timeout "$CAP" "$MACOS/launcher" > "$STDOUT" 2>&1 &
 LPID=$!
 

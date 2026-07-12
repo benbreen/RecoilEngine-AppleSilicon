@@ -36,11 +36,13 @@ PRD="${PRD:-$APP_DIR/pr-downloader}"
 WRITEDIR="${HOME}/Library/Application Support/Beyond-All-Reason-mac"
 MAPS=()
 
+PRINT_SERVER=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --writedir) WRITEDIR=$2; shift 2;;
     --map) MAPS+=("$2"); shift 2;;
     --full) FULL=1; shift;;
+    --print-server) PRINT_SERVER=1; shift;;
     *) echo "@E:usage unknown argument: $1"; exit 2;;
   esac
 done
@@ -51,15 +53,25 @@ detail(){ printf '@D %s\n' "$*"; }
 pulse() { printf '@I\n'; }
 emit_err() { printf '@E:%s %s\n' "$1" "$2"; }   # emit_err <code> <text>
 
+# Official BAR content network (BYAR-Chobby dist_cfg/config.json values).
+export PRD_RAPID_REPO_MASTER="https://repos-cdn.beyondallreason.dev/repos.gz"
+export PRD_HTTP_SEARCH_URL="https://files-cdn.beyondallreason.dev/find"
+
+# --print-server: report the content host (scheme/path stripped) and exit.
+# The launcher's first-run consent dialog shows this value, so the dialog can
+# never drift from the address this script actually downloads from. Must not
+# require pr-downloader (the launcher calls this before/without PRD).
+if [ "$PRINT_SERVER" = "1" ]; then
+  h="${PRD_RAPID_REPO_MASTER#*://}"
+  printf '%s\n' "${h%%/*}"
+  exit 0
+fi
+
 if [ ! -x "$PRD" ]; then
   emit_err launch "The downloader component is missing from the app bundle. Please re-download and reinstall the game."
   exit 4
 fi
 mkdir -p "$WRITEDIR"
-
-# Official BAR content network (BYAR-Chobby dist_cfg/config.json values).
-export PRD_RAPID_REPO_MASTER="https://repos-cdn.beyondallreason.dev/repos.gz"
-export PRD_HTTP_SEARCH_URL="https://files-cdn.beyondallreason.dev/find"
 # NB SPRING_DATADIR must NOT be set for pr-downloader (it shares the engine's
 # data-dir resolution and would treat a read-only dir as its write target).
 # NB pr-downloader sends its standard "pr-downloader/<version>" UA; it reads no

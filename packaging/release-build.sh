@@ -41,6 +41,15 @@ NOTARY_PROFILE=""
 VERSION=""
 VERSION_EXPLICIT=0
 PORTVER="$(cat "$PKG/PORT_VERSION" 2>/dev/null | tr -d '[:space:]')"
+# Release profile:
+#   bar    (default) — the engine PLUS the BAR helper: launcher, first-run/
+#            every-launch content download from BAR's official network, BAR
+#            branding. What players install to play Beyond All Reason.
+#   engine — the Recoil engine port alone: signed, notarized engine binaries
+#            (spring, spring-headless, pr-downloader) with the bundled driver
+#            and dylib closure, no game configuration or branding. For any
+#            Spring/Recoil game community, or for building other helpers on.
+PROFILE=bar
 
 # Test tiers (mirrors upstream Recoil CI: the *build* workflow only builds +
 # packages; heavier validation is separate/opt-in):
@@ -62,6 +71,7 @@ while [ $# -gt 0 ]; do
     --notary-profile) NOTARY_PROFILE=$2; shift 2;;
     --version) VERSION=$2; VERSION_EXPLICIT=1; shift 2;;
     --port-version) PORTVER=$2; shift 2;;
+    --profile) PROFILE=$2; shift 2;;
     --certify|--replay-smoke) REPLAY_SMOKE=1; shift;;
     --skip-replay-smoke) REPLAY_SMOKE=0; shift;;   # now the default; kept for compat
     --skip-sync-test) RUN_SYNC_TEST=0; shift;;
@@ -69,10 +79,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-APP="$OUT/Beyond All Reason.app"
+case "$PROFILE" in
+  bar)    APP="$OUT/Beyond All Reason.app";;
+  engine) APP="$OUT/Recoil Engine.app";;
+  *) echo "unknown --profile: $PROFILE (bar|engine)"; exit 2;;
+esac
 FRAMEWORKS="$APP/Contents/Frameworks"
 MACOS="$APP/Contents/MacOS"
 RESOURCES="$APP/Contents/Resources"
+echo "profile: $PROFILE -> $(basename "$APP")"
 
 echo "=== [1/7] gated engine build ($SRC -> $BUILD)"
 ENGINE_SRC="$SRC" ENGINE_BUILD="$BUILD" MESA_PREFIX="$MESA_PREFIX" "$BAR/scripts/build-engine.sh"
@@ -127,14 +142,24 @@ mkdir -p "$MACOS" "$FRAMEWORKS" "$RESOURCES"
 cp "$BUILD/spring" "$MACOS/spring"
 cp "$BUILD/tools/pr-downloader/src/pr-downloader" "$MACOS/pr-downloader" 2>/dev/null || \
   cp "$BUILD/tools/pr-downloader/src/pr-downloader_cli" "$MACOS/pr-downloader"
-cp "$PKG/download-content.sh" "$RESOURCES/"
-cp "$PKG/launcher.sh" "$MACOS/launcher"
-chmod +x "$MACOS/launcher" "$RESOURCES/download-content.sh"
-# first-run progress window + error dialog (native AppKit helpers)
-swiftc -O -o "$MACOS/progress-window" "$PKG/progress-window.swift" \
-  || { echo "FATAL: progress-window.swift failed to compile"; exit 1; }
-swiftc -O -o "$MACOS/error-dialog" "$PKG/error-dialog.swift" \
-  || { echo "FATAL: error-dialog.swift failed to compile"; exit 1; }
+if [ "$PROFILE" = "engine" ]; then
+  # engine consumers (game communities, dedicated hosts, replay tooling) get
+  # the headless build too; the BAR helper app has no use for it
+  cp "$BUILD/spring-headless" "$MACOS/spring-headless"
+fi
+if [ "$PROFILE" = "bar" ]; then
+  # ---- BAR helper: launcher, content download/update, native helpers ----
+  cp "$PKG/download-content.sh" "$RESOURCES/"
+  cp "$PKG/launcher.sh" "$MACOS/launcher"
+  chmod +x "$MACOS/launcher" "$RESOURCES/download-content.sh"
+  # first-run consent + progress window + error dialog (native AppKit helpers)
+  swiftc -O -o "$MACOS/progress-window" "$PKG/progress-window.swift" \
+    || { echo "FATAL: progress-window.swift failed to compile"; exit 1; }
+  swiftc -O -o "$MACOS/error-dialog" "$PKG/error-dialog.swift" \
+    || { echo "FATAL: error-dialog.swift failed to compile"; exit 1; }
+  swiftc -O -o "$MACOS/consent-dialog" "$PKG/consent-dialog.swift" \
+    || { echo "FATAL: consent-dialog.swift failed to compile"; exit 1; }
+fi
 # base content archives (engine-built sdz)
 mkdir -p "$RESOURCES/base"
 find "$BUILD" -name "*.sdz" -exec cp {} "$RESOURCES/base/" \;
@@ -142,12 +167,14 @@ find "$BUILD" -name "*.sdz" -exec cp {} "$RESOURCES/base/" \;
 # datadir (not from an sdz) — without it the engine aborts at boot with
 # "did you forget to run make install?". Ship the engine's cont/fonts.
 cp -R "$SRC/cont/fonts" "$RESOURCES/fonts"
-# BAR launcher config (chobby_config.json + default springsettings), extracted
-# from the canonical dist_cfg the official launcher uses; the launcher deploys
-# these at runtime (see launcher.sh). Without chobby_config.json the lobby
-# black-screens (game=generic -> Chobby shuts down).
-python3 "$PKG/extract-launcher-config.py" "$BAR/chobby/dist_cfg/config.json" "$RESOURCES" \
-  || { echo "FATAL: could not extract BAR launcher config from dist_cfg"; exit 1; }
+if [ "$PROFILE" = "bar" ]; then
+  # BAR launcher config (chobby_config.json + default springsettings), extracted
+  # from the canonical dist_cfg the official launcher uses; the launcher deploys
+  # these at runtime (see launcher.sh). Without chobby_config.json the lobby
+  # black-screens (game=generic -> Chobby shuts down).
+  python3 "$PKG/extract-launcher-config.py" "$BAR/chobby/dist_cfg/config.json" "$RESOURCES" \
+    || { echo "FATAL: could not extract BAR launcher config from dist_cfg"; exit 1; }
+fi
 
 # Mesa driver dylibs + ICD json (paths inside json rewritten to @loader_path-
 # style relative locations at bundle time)
@@ -224,7 +251,8 @@ bundle_deps() { # bundle_deps <macho> [<source-dir-for-@rpath-siblings>]
     esac
   done
 }
-for b in "$MACOS/spring" "$MACOS/pr-downloader"; do
+for b in "$MACOS/spring" "$MACOS/spring-headless" "$MACOS/pr-downloader"; do
+  [ -f "$b" ] || continue
   bundle_deps "$b"
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$b" 2>/dev/null || true
 done
@@ -277,21 +305,40 @@ done
 echo "bundle closure audit: all references bundle-relative, resolvable, or system"
 
 # Info.plist — version string clearly identifies the mac port build
-# (SYNC_VALIDATION.md §6: server-side triage must be trivial)
+# (SYNC_VALIDATION.md §6: server-side triage must be trivial).
+# Profile decides identity: the BAR helper app presents as the game client
+# (launcher entrypoint, BAR icon); the engine bundle is neutral Recoil (spring
+# entrypoint, no game branding, engine version user-facing).
+if [ "$PROFILE" = "bar" ]; then
+  PLIST_ID="dev.bar-macos.engine"
+  PLIST_NAME="Beyond All Reason"
+  PLIST_EXEC="launcher"
+  PLIST_SHORTVER="$PORTVER"
+  PLIST_ICON_KEYS='<key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>'
+  PLIST_LAN_NAME="Beyond All Reason"
+else
+  PLIST_ID="dev.bar-macos.recoil-engine"
+  PLIST_NAME="Recoil Engine"
+  PLIST_EXEC="spring"
+  PLIST_SHORTVER="$VERSION"
+  PLIST_ICON_KEYS=""
+  PLIST_LAN_NAME="The Recoil engine"
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>dev.bar-macos.engine</string>
-  <key>CFBundleName</key><string>Beyond All Reason</string>
-  <key>CFBundleDisplayName</key><string>Beyond All Reason</string>
-  <key>CFBundleExecutable</key><string>launcher</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundleIconName</key><string>AppIcon</string>
-  <!-- user-facing = port release; engine pin stays queryable for triage -->
-  <key>CFBundleShortVersionString</key><string>${PORTVER}</string>
+  <key>CFBundleIdentifier</key><string>${PLIST_ID}</string>
+  <key>CFBundleName</key><string>${PLIST_NAME}</string>
+  <key>CFBundleDisplayName</key><string>${PLIST_NAME}</string>
+  <key>CFBundleExecutable</key><string>${PLIST_EXEC}</string>
+  ${PLIST_ICON_KEYS}
+  <!-- user-facing version; engine pin stays queryable for triage -->
+  <key>CFBundleShortVersionString</key><string>${PLIST_SHORTVER}</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>EngineVersion</key><string>${VERSION}</string>
+  <key>PortVersion</key><string>${PORTVER}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.strategy-games</string>
@@ -300,20 +347,23 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <!-- macOS 15+ Local Network prompt text (LAN hosting/joining only;
        internet servers are unaffected) -->
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Beyond All Reason uses the local network to host and join LAN multiplayer games.</string>
+  <string>${PLIST_LAN_NAME} uses the local network to host and join LAN multiplayer games.</string>
 </dict></plist>
 PLIST
 
-# App icon. Assets.car is the native macOS 26 icon (CFBundleIconName) — the
-# system renders it full-tile with its own glass; a legacy .icns alone gets
-# shrunk onto a white tray on Tahoe. AppIcon.icns is the actool-generated
-# fallback (CFBundleIconFile). Both are compiled from packaging/AppIcon.icon
-# by packaging/build-icon.sh and committed. Staged before codesign so they
-# are sealed by the bundle signature.
-mkdir -p "$RESOURCES"
-cp "$PKG/Assets.car" "$RESOURCES/Assets.car"
-cp "$PKG/AppIcon.icns" "$RESOURCES/AppIcon.icns"
-echo "app icon staged: Assets.car + AppIcon.icns"
+if [ "$PROFILE" = "bar" ]; then
+  # App icon. Assets.car is the native macOS 26 icon (CFBundleIconName) — the
+  # system renders it full-tile with its own glass; a legacy .icns alone gets
+  # shrunk onto a white tray on Tahoe. AppIcon.icns is the actool-generated
+  # fallback (CFBundleIconFile). Both are compiled from packaging/AppIcon.icon
+  # by packaging/build-icon.sh and committed. Staged before codesign so they
+  # are sealed by the bundle signature. (BAR helper only — the engine bundle
+  # stays unbranded.)
+  mkdir -p "$RESOURCES"
+  cp "$PKG/Assets.car" "$RESOURCES/Assets.car"
+  cp "$PKG/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+  echo "app icon staged: Assets.car + AppIcon.icns"
+fi
 
 echo "=== [4/7] license collection + audit"
 mkdir -p "$RESOURCES/LICENSES"
@@ -356,7 +406,11 @@ echo "codesign OK (identity: ${IDENTITY})"
 
 echo "=== [6/7] notarization"
 mkdir -p "$OUT"
-ZIP="$OUT/BAR-macos-${PORTVER}.zip"
+if [ "$PROFILE" = "bar" ]; then
+  ZIP="$OUT/BAR-macos-${PORTVER}.zip"
+else
+  ZIP="$OUT/Recoil-macos-${VERSION}-port${PORTVER}.zip"
+fi
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 if [ "$IDENTITY" != "-" ] && [ -n "$NOTARY_PROFILE" ]; then
   xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
@@ -370,6 +424,10 @@ else
 fi
 
 echo "=== [6c/7] DMG (styled drag-to-Applications)"
+if [ "$PROFILE" != "bar" ]; then
+  DMG="(none — engine profile ships the notarized zip only)"
+  echo "(skipped — the engine bundle is consumed by tooling/other launchers, not drag-installed)"
+else
 DMG="$OUT/BAR-macos-${PORTVER}.dmg"
 VOLNAME="Beyond All Reason"
 rm -f "$DMG"
@@ -407,6 +465,7 @@ if [ "$IDENTITY" != "-" ]; then
   fi
 fi
 echo "dmg: $DMG"
+fi   # PROFILE=bar
 
 echo "=== [6d/7] signed-bundle GUI driver-identity smoke (opt-in; needs a GPU)"
 # Requires a real Apple Silicon GPU/display, so it lives in the certify tier
@@ -415,11 +474,14 @@ echo "=== [6d/7] signed-bundle GUI driver-identity smoke (opt-in; needs a GPU)"
 # runs alone — launch the actual bundle launcher briefly and require the
 # KosmicKrisp identity line (golden rule 11); a silent llvmpipe fallback in the
 # SIGNED bundle must fail the build, never ship.
-if [ "$REPLAY_SMOKE" = "1" ]; then
+if [ "$REPLAY_SMOKE" = "1" ] && [ "$PROFILE" != "bar" ]; then
+  echo "(engine profile has no launcher; the GUI smoke runs in the bar profile"
+  echo " — the engine binaries and dylib closure are identical between the two)"
+elif [ "$REPLAY_SMOKE" = "1" ]; then
   SMOKELOG=$(mktemp)
   SMOKEDIR=$(mktemp -d)
   mkdir -p "$SMOKEDIR/rapid"   # skip the first-run lobby download
-  BAR_WRITEDIR_OVERRIDE="$SMOKEDIR" BAR_CONTENT_SCOPE=lobby \
+  BAR_WRITEDIR_OVERRIDE="$SMOKEDIR" BAR_CONTENT_SCOPE=lobby BAR_ASSUME_CONSENT=1 \
     timeout 90 "$APP/Contents/MacOS/launcher" \
     > "$SMOKELOG" 2>&1 || true
   if grep -q "KOSMICKRISP_LOADED" "$SMOKELOG" "$SMOKEDIR/infolog.txt" 2>/dev/null; then
@@ -435,6 +497,7 @@ fi
 
 
 echo "=== [7/7] summary"
+echo "profile:   $PROFILE"
 echo "artifact:  $APP"
 echo "bundles:   $ZIP"
 echo "           $DMG"
