@@ -1892,6 +1892,24 @@ void CGlobalRendering::SetGLSupportFlags()
 		throw unsupported_error("OpenGL shaders not supported, aborting");
 	#endif
 
+	#if defined(__APPLE__) && !defined(HEADLESS)
+	// The macOS bundle renders through Zink -> KosmicKrisp -> Metal. If that
+	// stack fails to load, Mesa silently falls back to llvmpipe: the game
+	// LOOKS correct and runs at single-digit fps — historically the worst
+	// support-ticket class of this port. Fail loudly and actionably instead.
+	// SPRING_ALLOW_SOFTWARE_GL=1 keeps the old behavior for debugging.
+	if ((glRenderer.find("llvmpipe") != std::string::npos ||
+	     glRenderer.find("softpipe") != std::string::npos) &&
+	    getenv("SPRING_ALLOW_SOFTWARE_GL") == nullptr) {
+		throw unsupported_error(
+			"The bundled GPU driver failed to load and the game fell back to a "
+			"software renderer. This usually means the application bundle is "
+			"damaged: please re-download the game, drag it to Applications "
+			"again, and restart. If the problem persists, send us "
+			"~/Library/Application Support/Beyond-All-Reason-mac/infolog.txt");
+	}
+	#endif
+
 	haveAMD    = (  glVendor.find(   "ati ") != std::string::npos) || (  glVendor.find("amd ") != std::string::npos) ||
 				 (glRenderer.find("radeon ") != std::string::npos) || (glRenderer.find("amd ") != std::string::npos); //it's amazing how inconsistent AMD detection can be
 	haveIntel  = (  glVendor.find(  "intel") != std::string::npos);
