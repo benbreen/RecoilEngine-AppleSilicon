@@ -1060,7 +1060,7 @@ void UDPConnection::SendPacket(Packet& pkt)
 		mySocket->send_to(buffer(sendBuffer), addr, flags, err);
 	}
 
-	if (CheckErrorCode(err))
+	if (CheckErrorCode(err, addr))
 		return;
 
 	dataSent += sendBuffer.size();

@@ -7,6 +7,10 @@
 #include "System/Log/ILog.h"
 #include "System/StringUtil.h"
 
+#if defined(__APPLE__)
+#include <cerrno> // EHOSTUNREACH (Local Network privacy detection)
+#endif
+
 
 namespace netcode
 {
@@ -25,6 +29,35 @@ bool CheckErrorCode(asio::error_code& err)
 				err.message().c_str());
 		return true;
 	}
+}
+
+bool CheckErrorCode(asio::error_code& err, const asio::ip::udp::endpoint& dest)
+{
+#if defined(__APPLE__)
+	// macOS Local Network privacy: when the user denies (or never granted)
+	// the Local Network permission, every UDP send to a LAN address fails
+	// with EHOSTUNREACH — which looks exactly like a routing problem and
+	// times out with a generic message. Explain it once, actionably.
+	// (Internet servers are unaffected; only RFC1918/link-local targets.)
+	if (err && err.value() == EHOSTUNREACH && dest.address().is_v4()) {
+		const uint32_t a = dest.address().to_v4().to_uint();
+		const bool priv = ((a >> 24) == 10) ||                    // 10/8
+		                  ((a >> 20) == 0xAC1) ||                 // 172.16/12
+		                  ((a >> 16) == 0xC0A8) ||                // 192.168/16
+		                  ((a >> 16) == 0xA9FE);                  // 169.254/16
+		static bool warned = false;
+		if (priv && !warned) {
+			warned = true;
+			LOG_L(L_ERROR,
+				"Cannot reach %s: macOS is blocking Local Network access for "
+				"this app. Open System Settings > Privacy & Security > Local "
+				"Network and enable Beyond All Reason, then retry. "
+				"(Playing on internet servers is not affected.)",
+				dest.address().to_string().c_str());
+		}
+	}
+#endif
+	return CheckErrorCode(err);
 }
 
 asio::ip::udp::endpoint ResolveAddr(const std::string& host, int port, asio::error_code* err)

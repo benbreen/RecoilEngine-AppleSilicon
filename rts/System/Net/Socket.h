@@ -18,6 +18,7 @@ extern asio::io_service netservice;
  * @returns true if a network error occurred, false otherwise
  */
 bool CheckErrorCode(asio::error_code& err);
+bool CheckErrorCode(asio::error_code& err, const asio::ip::udp::endpoint& dest);
 
 /**
  * Resolves a host name or IP plus port number into a boost UDP end-point,
