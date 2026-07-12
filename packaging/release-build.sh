@@ -1,7 +1,7 @@
 #!/bin/bash
 # release-build.sh — end-to-end signed/notarized release artifact pipeline.
 #
-# Produces Beyond All Reason.app (staged, signed, optionally notarized) from
+# Produces BAR Launcher.app (staged, signed, optionally notarized) from
 # the pinned engine tree + pinned/patched Mesa, with EVERY release gate
 # unskippable in-line:
 #   build (via scripts/build-engine.sh: -O3 RELWITHDEBINFO, gcc dbl-64 swap,
@@ -80,7 +80,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$PROFILE" in
-  bar)    APP="$OUT/Beyond All Reason.app";;
+  bar)    APP="$OUT/BAR Launcher.app";;
   engine) APP="$OUT/Recoil Engine.app";;
   *) echo "unknown --profile: $PROFILE (bar|engine)"; exit 2;;
 esac
@@ -310,13 +310,13 @@ echo "bundle closure audit: all references bundle-relative, resolvable, or syste
 # (launcher entrypoint, BAR icon); the engine bundle is neutral Recoil (spring
 # entrypoint, no game branding, engine version user-facing).
 if [ "$PROFILE" = "bar" ]; then
-  PLIST_ID="dev.bar-macos.engine"
-  PLIST_NAME="Beyond All Reason"
+  PLIST_ID="dev.bar-macos.bar-launcher"
+  PLIST_NAME="BAR Launcher"
   PLIST_EXEC="launcher"
   PLIST_SHORTVER="$PORTVER"
   PLIST_ICON_KEYS='<key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIconName</key><string>AppIcon</string>'
-  PLIST_LAN_NAME="Beyond All Reason"
+  PLIST_LAN_NAME="BAR Launcher (and the game it launches)"
 else
   PLIST_ID="dev.bar-macos.recoil-engine"
   PLIST_NAME="Recoil Engine"
@@ -363,6 +363,15 @@ if [ "$PROFILE" = "bar" ]; then
   cp "$PKG/Assets.car" "$RESOURCES/Assets.car"
   cp "$PKG/AppIcon.icns" "$RESOURCES/AppIcon.icns"
   echo "app icon staged: Assets.car + AppIcon.icns"
+
+  # Spotlight keywords: the app is named "BAR Launcher" (it is not the game),
+  # but users will search for the game's name — kMDItemKeywords lets Spotlight
+  # (and Raycast/Alfred) match "Beyond All Reason" without the app claiming
+  # that name. Stored as an xattr (binary plist array); xattrs are outside the
+  # codesign seal and survive ditto zips and DMGs.
+  KEYWORDS_HEX=$(python3 -c "import plistlib; print(plistlib.dumps(['Beyond All Reason','BAR','RTS','Recoil'],fmt=plistlib.FMT_BINARY).hex())")
+  xattr -wx com.apple.metadata:kMDItemKeywords "$KEYWORDS_HEX" "$APP"
+  echo "spotlight keywords staged"
 fi
 
 echo "=== [4/7] license collection + audit"
@@ -429,7 +438,7 @@ if [ "$PROFILE" != "bar" ]; then
   echo "(skipped — the engine bundle is consumed by tooling/other launchers, not drag-installed)"
 else
 DMG="$OUT/BAR-macos-${PORTVER}.dmg"
-VOLNAME="Beyond All Reason"
+VOLNAME="BAR Launcher"
 rm -f "$DMG"
 DMGROOT=$(mktemp -d)
 cp -R "$APP" "$DMGROOT/"
@@ -451,7 +460,7 @@ hdiutil attach "$RWDMG" -mountpoint "$MOUNTPT" -nobrowse >/dev/null
 SetFile -a C "$MOUNTPT" 2>/dev/null || true   # honor .VolumeIcon.icns
 # Write the styling .DS_Store (icon view, background picture, icon positions
 # on the arrow endpoints) directly — headless, no Finder/Automation needed.
-python3 "$PKG/dmg-layout.py" "$MOUNTPT" "Beyond All Reason.app" \
+python3 "$PKG/dmg-layout.py" "$MOUNTPT" "$(basename "$APP")" \
   || { echo "FATAL: dmg layout failed"; hdiutil detach "$MOUNTPT" >/dev/null; exit 1; }
 sync
 hdiutil detach "$MOUNTPT" >/dev/null

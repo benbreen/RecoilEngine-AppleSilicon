@@ -25,8 +25,10 @@ let alert = NSAlert()
 alert.messageText = "Recoil Engine"
 alert.informativeText =
     "Do you wish to download and run the game Beyond All Reason from \(server)?\n\n" +
-    "This game is not hosted or vetted by the maintainer of Recoil Engine for macOS, " +
-    "download and run this game AT YOUR OWN RISK!\n\n" +
+    "Beyond All Reason is third-party content. It is not hosted, vetted, or " +
+    "endorsed by the maintainer of Recoil Engine for macOS, who accepts no " +
+    "responsibility for it or for any damage it may cause. Download and run " +
+    "this game AT YOUR OWN RISK!\n\n" +
     "If you continue, future updates for the game may download and run " +
     "automatically."
 alert.alertStyle = .warning

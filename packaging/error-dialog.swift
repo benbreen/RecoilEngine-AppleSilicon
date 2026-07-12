@@ -19,7 +19,7 @@ func arg(_ name: String) -> String? {
     return nil
 }
 
-let title = arg("--title") ?? "Beyond All Reason"
+let title = arg("--title") ?? "BAR Launcher"
 var message = arg("--message") ?? ""
 if message.isEmpty {
     message = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""

@@ -34,7 +34,7 @@ VERSION_ARG := $(if $(VERSION),--version "$(VERSION)",)
 
 help:
 	@echo "macOS packaging (details: README.md 'Building the macOS app'):"
-	@echo "  make app       build + package the BAR helper app -> release-artifacts/Beyond All Reason.app (+ .zip/.dmg)"
+	@echo "  make app       build + package the BAR helper app -> release-artifacts/BAR Launcher.app (+ .zip/.dmg)"
 	@echo "  make engine-dist  package the Recoil engine alone (no BAR helper/branding) -> Recoil-macos-*.zip"
 	@echo "                 fast, headless-safe, ad-hoc signed (this Mac only)"
 	@echo "  make certify   app + replay-determinism cert + GPU driver smoke (needs an Apple Silicon Mac)"
@@ -64,4 +64,4 @@ engine:
 	scripts/build-engine.sh
 
 clean-artifacts:
-	rm -rf "release-artifacts/Beyond All Reason.app" release-artifacts/*.zip release-artifacts/*.dmg
+	rm -rf "release-artifacts/BAR Launcher.app" release-artifacts/*.zip release-artifacts/*.dmg

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Beyond All Reason.app launcher (CFBundleExecutable).
+# BAR Launcher.app entrypoint (CFBundleExecutable).
 # Responsibilities, in order:
 #   1. wire the bundled Mesa Zink -> KosmicKrisp -> Metal driver env
 #      (bundle-relative paths only; nothing machine-specific);
@@ -23,7 +23,7 @@ WRITEDIR="${BAR_WRITEDIR_OVERRIDE:-${HOME}/Library/Application Support/Beyond-Al
 LOBBY_RAPID="rapid://byar-chobby:test"
 
 fail_dialog() { # self-addressed AppleScript dialog: no Automation TCC involved
-  osascript -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with title \"Beyond All Reason\" with icon caution" >/dev/null 2>&1 || true
+  osascript -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with title \"BAR Launcher\" with icon caution" >/dev/null 2>&1 || true
 }
 
 mkdir -p "$WRITEDIR"
@@ -186,7 +186,7 @@ if [ "${BAR_SKIP_CONTENT_CHECK:-0}" != "1" ]; then
     MSG="${ERR_TEXT:-The first-run download failed (code ${RC}).}"
     ERRHELP="$HERE/error-dialog"
     if [ -x "$ERRHELP" ]; then
-      "$ERRHELP" --title "Beyond All Reason" --message "[${ERR_CODE:-unknown}] $MSG" --logfile "$LOG"
+      "$ERRHELP" --title "BAR Launcher" --message "[${ERR_CODE:-unknown}] $MSG" --logfile "$LOG"
     else
       fail_dialog "$MSG"$'\n\n'"Details: $LOG"
     fi

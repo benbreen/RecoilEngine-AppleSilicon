@@ -27,7 +27,7 @@ final class ProgressController: NSObject, NSApplicationDelegate {
     var inError = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        window.title = "Beyond All Reason"
+        window.title = "BAR Launcher"
         window.center()
         window.isReleasedWhenClosed = false
 

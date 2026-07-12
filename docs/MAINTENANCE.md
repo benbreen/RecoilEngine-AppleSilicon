@@ -60,12 +60,18 @@ When the fleet moves to a new engine version `NEW` (e.g. 2026.06.08):
 ## Releasing the app
 
 `make app` (build/package, headless-safe) and `make certify` / `make release`
-(adds GPU + replay certification). The bundle version is read from the built
-engine (`spring --version`) so `CFBundleShortVersionString` == the fleet's
-version identity. See the README "Building the macOS app". Long, GPU-, and
-content-dependent validation is opt-in so build machines can package — mirrors
-upstream Recoil CI, where the build workflow builds and a separate workflow
-validates.
+(adds GPU + replay certification). The engine pin is read from the built
+engine (`spring --version`) and kept in `CFBundleVersion`/`EngineVersion`;
+the user-facing release number comes from `packaging/PORT_VERSION`. See the
+README "Building the macOS app". Long, GPU-, and content-dependent validation
+is opt-in so build machines can package — mirrors upstream Recoil CI, where
+the build workflow builds and a separate workflow validates.
+
+**Every GitHub release's notes MUST start with
+`packaging/release-notes-header.md` verbatim** — the persistent caution block
+(unofficial port, third-party content downloaded at the user's own risk). It
+mirrors the first-run consent dialog and the README caution; if one changes,
+change all three.
 
 ## What to upstream (keep the layer shrinking)
 

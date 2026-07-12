@@ -8,32 +8,51 @@
   <img src="https://img.shields.io/badge/built%20on-Recoil-orange" alt="Built on the Recoil engine">
 </p>
 
-A native Apple Silicon port of the **[Recoil](https://github.com/beyond-all-reason/RecoilEngine)**
-RTS engine. It is not a game by itself — it lets Recoil/Spring games run on a
-Mac, no Rosetta, no virtual machine. The headline use is
-**[Beyond All Reason](https://www.beyondallreason.info/)**: an optional helper
-app downloads BAR's content from its official network and configures the
-engine to play it, with full graphics and full online multiplayer against
-Windows and Linux players in the same lobbies.
+**This project is a native Apple Silicon port of the
+[Recoil](https://github.com/beyond-all-reason/RecoilEngine) RTS engine** — the
+engine itself, running on macOS with no Rosetta and no virtual machine. It is
+not a game: it is the platform that Recoil/Spring games run on.
+
+For convenience, releases also include an **optional BAR launcher package**: a
+drag-to-install app that (with your explicit consent, and with the caveats
+below) downloads **[Beyond All Reason](https://www.beyondallreason.info/)**
+from its official content network and configures the engine to play it — full
+graphics, full online multiplayer against Windows and Linux players in the
+same lobbies.
 
 **Two downloads** on the [releases page](https://github.com/benbreen/recoil-apple/releases/latest):
 
 | Artifact | What it is | For whom |
 |---|---|---|
-| `Recoil-macos-<engine>-port<ver>.zip` | The engine port alone: signed, notarized `spring`, `spring-headless`, and `pr-downloader` with the bundled Metal driver stack. No game content or configuration. | Any Recoil/Spring game community, tooling, or anyone building their own game helper on top. |
-| `BAR-macos-<ver>.dmg` | The engine **plus the BAR helper**: a drag-to-install app that downloads Beyond All Reason from BAR's official content network on first launch, keeps it updated, and launches straight into its lobby. | Players who want to play BAR on a Mac. |
+| `Recoil-macos-<engine>-port<ver>.zip` | **The project itself** — the engine port: signed, notarized `spring`, `spring-headless`, and `pr-downloader` with the bundled Metal driver stack. No game content or configuration. | Any Recoil/Spring game community, tooling, or anyone building their own game launcher on top. |
+| `BAR-macos-<ver>.dmg` | **Convenience package** — the engine plus a BAR launcher: a drag-to-install app that (after an explicit consent prompt) downloads Beyond All Reason from BAR's official content network, keeps it updated, and launches straight into its lobby. | Players who want to play BAR on a Mac. |
 
-> **Unofficial project.** This is an independent community port — it is not
-> affiliated with, endorsed by, or supported by the Recoil engine team or the
-> Beyond All Reason project. Please report issues with this port **here**, not
-> to them.
->
-> **No game content is hosted here.** This repository and its releases contain
-> only the engine (GPL-2.0) and this port's packaging. The game itself — its
-> units, art, sounds, and maps, which are under
-> [BAR's own licenses](https://github.com/beyond-all-reason/Beyond-All-Reason/blob/master/LICENSE.md)
-> — is downloaded by the app on first launch from BAR's official content
-> network, exactly as the official launcher does.
+> [!CAUTION]
+> **Unofficial project — third-party game content.** This is an independent
+> community port, not affiliated with, endorsed by, or supported by the Recoil
+> engine team or the Beyond All Reason project. **No game content is hosted
+> here**: this repository and its releases contain only the engine (GPL-2.0)
+> and this port's packaging. The game itself — **including executable game
+> code that the engine runs**, plus its units, art, sounds, and maps,
+> under [BAR's own licenses](https://github.com/beyond-all-reason/Beyond-All-Reason/blob/master/LICENSE.md)
+> — is downloaded by the helper app from BAR's official content network on
+> first launch (after an explicit consent prompt) and may auto-update later,
+> possibly including other components in future.
+> That code and content is not hosted, vetted, or endorsed by this project's
+> maintainer, who accepts no responsibility for it or for any damage it may
+> cause — install and play **AT YOUR OWN RISK**. Downloads use HTTPS and
+> content-hash verification (integrity in transit, not a vetting of the
+> content). If you believe game content is malicious, report it to the
+> [BAR project](https://github.com/beyond-all-reason/Beyond-All-Reason);
+> report problems with this port **here**, not to them.
+
+> **Good faith, stated up front.** This project is free, unofficial, and
+> takes no money — no donations, no sponsorships. If the Beyond All Reason or
+> Recoil projects object to any part of it, including the names used, it will
+> be renamed or taken down on request. Support is best-effort. Download only
+> from this repository's [Releases](../../releases) page and verify the
+> published SHA-256 checksums; no other distribution channel is ours. Security
+> issues: see [SECURITY.md](SECURITY.md).
 
 > ⚡️ **A Claude Fable port.** The macOS layer in this repository was built
 > largely by **[Claude Fable](https://www.anthropic.com)** (Anthropic's Claude
@@ -41,13 +60,13 @@ Windows and Linux players in the same lobbies.
 > [What this project did](#what-this-project-did).
 
 <p align="center">
-  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><b>⬇&nbsp; Download · play Beyond All Reason on your Mac</b></a>
-  &nbsp;·&nbsp; requires an Apple Silicon Mac on macOS 26+
+  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
+  &nbsp;·&nbsp; engine port + optional BAR launcher &nbsp;·&nbsp; macOS 26+
 </p>
 
 <p align="center">
   <img src="screenshots/hero.jpg" alt="Beyond All Reason running natively on macOS (Apple Silicon)" width="100%">
-  <br><em>Beyond All Reason running natively on an Apple Silicon Mac.</em>
+  <br><em>The engine port running Beyond All Reason natively on an Apple Silicon Mac.</em>
 </p>
 
 The [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine) is the
@@ -187,9 +206,9 @@ and [Homebrew](https://brew.sh) — the build installs the packages it needs
 (SDL2, LLVM 19 for the driver compile, openal-soft, …) as it goes.
 
 ```sh
-make app         # the BAR helper app: pinned Mesa driver (cached after the
-                 # first build) -> engine + determinism gates -> Beyond All
-                 # Reason.app + .dmg (ad-hoc signed, local use)
+make app         # the BAR launcher package: pinned Mesa driver (cached
+                 # after the first build) -> engine + determinism gates ->
+                 # BAR Launcher.app + .dmg (ad-hoc signed, local use)
 make engine-dist # the Recoil engine alone (no BAR helper/branding):
                  # Recoil-macos-<engine>-port<ver>.zip
 make certify     # app + full replay-determinism certification (GPU, ~1h)
