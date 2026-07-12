@@ -195,6 +195,17 @@ bool MacMetalPresent_Init(void* caMetalLayer)
 	if (g_queue == nil)
 		return false;
 
+	// Opt out of App Nap for the process lifetime: a backgrounded engine can
+	// be HOSTING a multiplayer game, and timer throttling of an occluded app
+	// lags every connected player. Latency-critical also keeps the display
+	// path scheduled tightly while frontmost.
+	static id s_activity = nil;
+	if (s_activity == nil) {
+		s_activity = [[[NSProcessInfo processInfo]
+			beginActivityWithOptions:(NSActivityUserInitiated | NSActivityLatencyCritical)
+			                  reason:@"real-time game session"] retain];
+	}
+
 	g_layer.device          = g_device;
 	g_layer.pixelFormat     = MTLPixelFormatBGRA8Unorm;
 	g_layer.framebufferOnly  = NO; // allow the drawable to be a blit destination
@@ -417,7 +428,17 @@ void MacMetalPresent_PresentIOSurface(bool flipY)
     dispatch_async(g_presentQueue, ^{
         id<CAMetalDrawable> drawable = [g_layer nextDrawable];
         if (drawable == nil) {
-            fprintf(stderr, "[MetalPresent] nextDrawable returned nil — frame not presented\n");
+            // see the direct-path handler: display transitions produce nil
+            // streaks; rate-limit and re-derive drawableSize to self-heal
+            static uint64_t s_nilStreak = 0;
+            ++s_nilStreak;
+            if ((s_nilStreak & (s_nilStreak - 1)) == 0)
+                fprintf(stderr, "[MetalPresent] nextDrawable nil x%llu (IOSurface path)\n",
+                        (unsigned long long)s_nilStreak);
+            const CGSize  lb = g_layer.bounds.size;
+            const CGFloat cs = g_layer.contentsScale > 0 ? g_layer.contentsScale : 1.0;
+            if (lb.width > 0 && lb.height > 0)
+                g_layer.drawableSize = CGSizeMake(lb.width * cs, lb.height * cs);
             dispatch_semaphore_signal(g_presentBudget);
             return;
         }
@@ -538,7 +559,20 @@ bool MacMetalPresent_PresentPixelBuffer(void* base, size_t len, int w, int h,
     dispatch_async(g_presentQueue, ^{
         id<CAMetalDrawable> drawable = [g_layer nextDrawable];
         if (drawable == nil) {
-            fprintf(stderr, "[MetalPresent] nextDrawable returned nil — frame not presented\n");
+            // Streaks of nil drawables happen while a display disconnects /
+            // reconnects or the Space animates: rate-limit the log and nudge
+            // the layer's drawableSize from its CURRENT bounds so presentation
+            // self-heals once a display is back (bounds can be zero or stale
+            // for several frames around the transition).
+            static uint64_t s_nilStreak = 0;
+            ++s_nilStreak;
+            if ((s_nilStreak & (s_nilStreak - 1)) == 0)
+                fprintf(stderr, "[MetalPresent] nextDrawable nil x%llu — display transition? re-deriving drawableSize\n",
+                        (unsigned long long)s_nilStreak);
+            const CGSize  lb = g_layer.bounds.size;
+            const CGFloat cs = g_layer.contentsScale > 0 ? g_layer.contentsScale : 1.0;
+            if (lb.width > 0 && lb.height > 0)
+                g_layer.drawableSize = CGSizeMake(lb.width * cs, lb.height * cs);
             dispatch_semaphore_signal(g_presentBudget);
             return;
         }
