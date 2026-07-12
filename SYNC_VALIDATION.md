@@ -110,6 +110,16 @@ against an official Windows client.
   globally and no fast-math anywhere in synced code (the Metal shader
   fast-math option affects only unsynced rendering — shaders never feed the
   simulation).
+- **Marathon headless re-simulations can end early on the game's Lua memory
+  ceiling, not on sync.** The engine's Lua allocator budget (a game modrule,
+  1.5 GB) is counted globally across synced and unsynced Lua; a flat-out
+  re-simulation of a very long 8v8 with the full UI widget set loaded can
+  brush that ceiling and exit — with every frame up to that point still
+  checksum-verified, and at a different frame on each run (allocator/GC
+  noise, not simulation state). Observed on this port only within ~1% of the
+  end of the longest (92k-frame) demo; the same class of Lua memory pressure
+  is visible on official binaries in long headless runs. Live games are
+  unaffected (our longest live soak game ran 100,657 frames).
 - **Desync triage is built in.** `SPRING_DUMP_STATE_RANGE=min:max` dumps
   full synced state (RNG, units, features, projectiles, raw floats) per
   frame in the range, so any reported desync can be bisected to the exact
