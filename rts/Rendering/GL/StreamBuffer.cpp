@@ -63,7 +63,10 @@ void IStreamBufferConcept::WaitBuffer(GLsync& syncObj) const
 
 	uint32_t gWaitCount = 0;
 	while (true) {
-		GLenum waitReturn = glClientWaitSync(syncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 1);
+		// block up to 250us per call instead of a 1ns spin: every
+		// glClientWaitSync round-trips the driver (expensive on zink), and an
+		// unsignaled fence used to burn thousands of calls per frame here
+		GLenum waitReturn = glClientWaitSync(syncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 250000);
 		if (waitReturn == GL_ALREADY_SIGNALED || waitReturn == GL_CONDITION_SATISFIED)
 			break;
 

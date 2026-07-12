@@ -32,7 +32,23 @@
 ////////////////////////////////////////////////////////////////////
 
 namespace Impl {
+#ifdef __APPLE__
+	// zink/KosmicKrisp GPU completions run 2-3 frames behind the CPU, so a
+	// 3-deep ring makes every Map() spin in glClientWaitSync on a fence
+	// that is not yet signaled (~10ms/frame in TransformsUploader::Update,
+	// ~30% of wall at 31fps, m7 arena). 6 slots keeps the waited fence old
+	// enough to always be signaled; cost is a few MB of SSBO.
+	// SPRING_MAC_UPLOAD_BUFFERING overrides (min 3).
+	static const uint32_t PERSISTENT_MAPPING_BUFFERING = []() -> uint32_t {
+		if (const char* s = getenv("SPRING_MAC_UPLOAD_BUFFERING")) {
+			const int v = atoi(s);
+			if (v >= 3 && v <= 8) return (uint32_t)v;
+		}
+		return 6u;
+	}();
+#else
 	static constexpr uint32_t PERSISTENT_MAPPING_BUFFERING = 3u;
+#endif
 
 	template<
 		typename DataType,
