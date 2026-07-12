@@ -17,6 +17,14 @@
 extern "C" {
 #endif
 
+// Declare the byte order the engine will write into the IOSurface buffer
+// (true = RGBA, false = BGRA, the default). Must be called before the first
+// MacMetalPresent_AcquireIOSurfaceBuffer; a later change recreates the
+// backing. Lets the engine read back in the framebuffer's NATIVE component
+// order so Mesa's GPU-pack PBO path engages (a swizzling read falls off the
+// fast path).
+void MacMetalPresent_SetSourceRGBA(int rgba);
+
 // caMetalLayer: the CAMetalLayer* already attached to the SDL window's NSView
 // (the same pointer GetNSViewFromSDLWindow returns). Returns true on success.
 bool MacMetalPresent_Init(void* caMetalLayer);

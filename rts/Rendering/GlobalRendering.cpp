@@ -1183,6 +1183,104 @@ static bool EnsureReadbackPBOs(int w, int h)
 	}
 	return true;
 }
+
+// Staging-texture ring for PIPELINED readback (the default present path).
+//
+// Why: Zink+KosmicKrisp lack the caps for Mesa's GPU PBO-pack fast path, so
+// ANY glReadPixels of the just-rendered frame — PBO-bound or not — falls back
+// to zink_image_map -> batch_usage_wait: a synchronous CPU map that waits for
+// the ENTIRE GPU pipeline to drain. Measured at ~65% of frame time in heavy
+// scenes (2700-unit arena: 114ms mean swap, 5-12 fps). The old "async PBO"
+// path was defeated by this fallback — the readpixels INTO the PBO was itself
+// the sync point.
+//
+// How: frame N blits the default framebuffer into ring[N % RB_RING]
+// (GPU-queued, returns immediately; doubles as the optional downsample) and
+// reads back ring[(N - lag) % RB_RING], whose GPU work completed `lag` frames
+// ago — the fallback map then has nothing to wait for. Costs `lag` frames of
+// present latency (default 2; SPRING_MAC_PRESENT_LAG=0/1/2, 0 = legacy path).
+static constexpr int RB_RING = 3;
+static unsigned int g_rbFBO[RB_RING] = { 0, 0, 0 };
+static unsigned int g_rbTex[RB_RING] = { 0, 0, 0 };
+static int  g_rbW = 0, g_rbH = 0;
+static long g_rbFrame = 0;
+
+// GPU-pack PBO ring (the current default; see SwapBuffers). Reads the frame
+// into a pixel-pack BUFFER via Mesa's compute-pack path (st_pbo download):
+// non-blocking on the CPU AND queue-depth-independent, unlike any texture
+// readback, because mapping an idle linear buffer needs no new GPU work.
+// Requirements discovered with testkit/readback-bench.c:
+//  - a PIXEL_PACK buffer must be bound (raw-pointer reads never GPU-pack) and
+//  - the read format must match the framebuffer's component order exactly
+//    (a swizzling read falls off the fast path -> sync texture map, ~30ms in
+//    heavy scenes vs ~1.3ms here at 5120x2160).
+static constexpr int PP_RING = 4;
+static unsigned int g_ppPBO[PP_RING] = { 0, 0, 0 };
+static int  g_ppW = 0, g_ppH = 0;
+static long g_ppFrame = 0;
+
+static bool EnsureGpuPackRing(int w, int h)
+{
+	if (g_ppPBO[0] != 0 && g_ppW == w && g_ppH == h)
+		return true;
+	if (g_ppPBO[0] == 0)
+		glGenBuffers(PP_RING, g_ppPBO);
+	for (int i = 0; i < PP_RING; ++i) {
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, g_ppPBO[i]);
+		glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)w * h * 4, nullptr, GL_STREAM_READ);
+	}
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	g_ppW = w;
+	g_ppH = h;
+	g_ppFrame = 0;
+	static bool s_logged = false;
+	if (!s_logged) {
+		fprintf(stderr, "[spring-mac/gpupack] GPU-pack PBO-ring readback active (%dx%d)\n", w, h);
+		s_logged = true;
+	}
+	return true;
+}
+
+static bool EnsureStagingRing(int w, int h)
+{
+	if (g_rbFBO[0] != 0 && g_rbW == w && g_rbH == h)
+		return true;
+	if (g_rbFBO[0] == 0) {
+		glGenFramebuffers(RB_RING, g_rbFBO);
+		glGenTextures(RB_RING, g_rbTex);
+	}
+	GLint prevDrawFBO = 0;
+	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFBO);
+	for (int i = 0; i < RB_RING; ++i) {
+		glBindTexture(GL_TEXTURE_2D, g_rbTex[i]);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_rbFBO[i]);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_rbTex[i], 0);
+		const GLenum fst = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+		if (fst != GL_FRAMEBUFFER_COMPLETE) {
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDrawFBO);
+			glBindTexture(GL_TEXTURE_2D, 0);
+			fprintf(stderr, "[spring-mac/ring] staging FBO %d incomplete: 0x%04x\n", i, (unsigned)fst);
+			return false;
+		}
+	}
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDrawFBO);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	g_rbW = w;
+	g_rbH = h;
+	g_rbFrame = 0;
+
+	static bool s_logged = false;
+	if (!s_logged) {
+		fprintf(stderr, "[spring-mac/ring] pipelined staging-ring readback active (%dx%d)\n", w, h);
+		s_logged = true;
+	}
+	return true;
+}
 #endif
 
 void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
@@ -1280,13 +1378,151 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 			const int  rdH          = std::max(1, g_pbufH / s_dsFactor);
 			const bool doDownsample = (s_dsFactor > 1 && EnsureDownscaleReadbackFBO(rdW, rdH));
 
+			// Native read format of the default framebuffer: reading in this
+			// exact component order keeps Mesa on the GPU-pack PBO path
+			// (see EnsureGpuPackRing). The Metal side interprets the IOSurface
+			// bytes in the same order, so colors are bit-identical either way.
+			static const GLenum s_readFormat = []() -> GLenum {
+				GLint fmt = 0, typ = 0;
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+				glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &fmt);
+				glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE,   &typ);
+				const bool byteRGBA = (fmt == GL_RGBA && typ == GL_UNSIGNED_BYTE);
+				fprintf(stderr, "[spring-mac/present] impl color read fmt=0x%04x type=0x%04x -> reading %s\n",
+				        (unsigned)fmt, (unsigned)typ, byteRGBA ? "GL_RGBA" : "GL_BGRA");
+				return byteRGBA ? GL_RGBA : GL_BGRA;
+			}();
+			MacMetalPresent_SetSourceRGBA(s_readFormat == GL_RGBA);
+
 			const spring_time tEntry = s_timePresent ? spring_now() : spring_notime;
 			size_t ioRowBytes = 0;
 			void*  ioBase     = wantLegacy ? nullptr
 			                               : MacMetalPresent_AcquireIOSurfaceBuffer(rdW, rdH, &ioRowBytes);
 			const spring_time tAfterAcquire = s_timePresent ? spring_now() : spring_notime;
 
-			if (ioBase != nullptr) {
+			// Pipelined staging-ring readback (default; see EnsureStagingRing).
+			// SPRING_MAC_PRESENT_LAG: 1..2 = frames of present latency,
+			// 0 = legacy paths below (sync or PBO readback of the current frame).
+			static const int s_lagFrames = []() -> int {
+				if (const char* s = getenv("SPRING_MAC_PRESENT_LAG")) {
+					const int v = atoi(s);
+					if (v >= 0 && v <= 3) return v; // 3 needs the gpu-pack ring (PP_RING=4)
+				}
+				return 2;
+			}();
+
+			// GPU-pack PBO ring: the default present readback.
+			// SPRING_MAC_PRESENT_GPUPACK=0 falls back to the staging-ring below.
+			static const bool s_gpuPack = []() {
+				const char* s = getenv("SPRING_MAC_PRESENT_GPUPACK");
+				return s == nullptr || atoi(s) != 0;
+			}();
+
+			if (ioBase != nullptr && s_gpuPack && s_lagFrames > 0 && EnsureGpuPackRing(rdW, rdH)) {
+				if (doDownsample) {
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+					glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_dsFBO);
+					glBlitFramebuffer(0, 0, g_pbufW, g_pbufH,
+					                  0, 0, rdW,     rdH,
+					                  GL_COLOR_BUFFER_BIT, GL_LINEAR);
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, g_dsFBO);
+				} else {
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+				}
+
+				// queue this frame's GPU pack into the ring (CPU-non-blocking)
+				const int cur = (int)(g_ppFrame % PP_RING);
+				glBindBuffer(GL_PIXEL_PACK_BUFFER, g_ppPBO[cur]);
+				glReadPixels(0, 0, rdW, rdH, s_readFormat, GL_UNSIGNED_BYTE, nullptr);
+				glFlush(); // submit the pack now; otherwise it rides the NEXT frame's flush (+1 frame of map wait)
+				const spring_time tAfterRead = s_timePresent ? spring_now() : spring_notime;
+
+				// map the lag-frames-old slot (idle linear buffer: instant map,
+				// no GPU round-trip) and copy into the IOSurface
+				if (g_ppFrame >= s_lagFrames) {
+					const int old = (int)((g_ppFrame - s_lagFrames) % PP_RING);
+					glBindBuffer(GL_PIXEL_PACK_BUFFER, g_ppPBO[old]);
+					const GLsizeiptr nBytes = (GLsizeiptr)rdW * (GLsizeiptr)rdH * 4;
+					if (void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, nBytes, GL_MAP_READ_BIT)) {
+						const size_t srcRowBytes = (size_t)rdW * 4;
+						if (ioRowBytes == srcRowBytes) {
+							std::memcpy(ioBase, mapped, srcRowBytes * (size_t)rdH);
+						} else {
+							const uint8_t* srcp = static_cast<const uint8_t*>(mapped);
+							uint8_t*       dstp = static_cast<uint8_t*>(ioBase);
+							for (int yy = 0; yy < rdH; ++yy)
+								std::memcpy(dstp + (size_t)yy * ioRowBytes,
+								            srcp + (size_t)yy * srcRowBytes, srcRowBytes);
+						}
+						glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+					}
+				}
+				glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+				g_ppFrame++;
+
+				const spring_time tAfterMap = s_timePresent ? spring_now() : spring_notime;
+				MacMetalPresent_PresentIOSurface(true);
+				if (s_timePresent) {
+					const spring_time tAfterPresent = spring_now();
+					static int    s_gpCnt = 0;
+					static double s_gpAcqMs = 0.0, s_gpReadMs = 0.0, s_gpMapMs = 0.0, s_gpPresMs = 0.0;
+					s_gpAcqMs  += (tAfterAcquire - tEntry).toMilliSecsf();
+					s_gpReadMs += (tAfterRead    - tAfterAcquire).toMilliSecsf();
+					s_gpMapMs  += (tAfterMap     - tAfterRead).toMilliSecsf();
+					s_gpPresMs += (tAfterPresent - tAfterMap).toMilliSecsf();
+					if (++s_gpCnt >= 60) {
+						fprintf(stderr,
+						    "[spring-mac/present-gpupack] avg over %d frames: acquire %.2fms | read %.2fms | map+copy %.2fms | metal-submit %.2fms\n",
+						    s_gpCnt, s_gpAcqMs / s_gpCnt, s_gpReadMs / s_gpCnt, s_gpMapMs / s_gpCnt, s_gpPresMs / s_gpCnt);
+						s_gpCnt = 0; s_gpAcqMs = s_gpReadMs = s_gpMapMs = s_gpPresMs = 0.0;
+					}
+				}
+			} else if (ioBase != nullptr && s_lagFrames > 0 && EnsureStagingRing(rdW, rdH)) {
+				const int cur = (int)(g_rbFrame % RB_RING);
+				// queue this frame's blit into the ring (also does any downsample)
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_rbFBO[cur]);
+				glBlitFramebuffer(0, 0, g_pbufW, g_pbufH,
+				                  0, 0, rdW,     rdH,
+				                  GL_COLOR_BUFFER_BIT,
+				                  (rdW == g_pbufW && rdH == g_pbufH) ? GL_NEAREST : GL_LINEAR);
+				glFlush(); // submit the batch so the blit executes during this frame
+
+				if (g_rbFrame >= s_lagFrames) {
+					// read back the `lag`-frames-old slot — its GPU work is done,
+					// so the driver's synchronous-map fallback returns immediately
+					const int old = (int)((g_rbFrame - s_lagFrames) % RB_RING);
+					glBindFramebuffer(GL_READ_FRAMEBUFFER, g_rbFBO[old]);
+					const int rowPixels = static_cast<int>(ioRowBytes / 4);
+					if (rowPixels != rdW)
+						glPixelStorei(GL_PACK_ROW_LENGTH, rowPixels);
+					glReadPixels(0, 0, rdW, rdH, GL_BGRA, GL_UNSIGNED_BYTE, ioBase);
+					if (rowPixels != rdW)
+						glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+				}
+				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+				g_rbFrame++;
+
+				const spring_time tAfterRingRead = s_timePresent ? spring_now() : spring_notime;
+				MacMetalPresent_PresentIOSurface(true);
+				if (s_timePresent) {
+					const spring_time tAfterRingPresent = spring_now();
+					static int    s_ringCnt = 0;
+					static double s_ringAcqMs = 0.0, s_ringReadMs = 0.0, s_ringPresMs = 0.0;
+					s_ringAcqMs  += (tAfterAcquire   - tEntry).toMilliSecsf();
+					s_ringReadMs += (tAfterRingRead  - tAfterAcquire).toMilliSecsf();
+					s_ringPresMs += (tAfterRingPresent - tAfterRingRead).toMilliSecsf();
+					if (++s_ringCnt >= 60) {
+						fprintf(stderr,
+						    "[spring-mac/present-ring] avg over %d frames: acquire %.2fms | blit+read %.2fms | metal-submit %.2fms\n",
+						    s_ringCnt, s_ringAcqMs / s_ringCnt, s_ringReadMs / s_ringCnt, s_ringPresMs / s_ringCnt);
+						s_ringCnt = 0; s_ringAcqMs = s_ringReadMs = s_ringPresMs = 0.0;
+					}
+				}
+			} else if (ioBase != nullptr) {
 				if (doDownsample) {
 					// Blit default FBO (full Retina render target) → smaller FBO with linear filter.
 					glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);

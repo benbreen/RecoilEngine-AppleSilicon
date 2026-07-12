@@ -216,9 +216,19 @@ static void ReleaseIOSurfaceBacking()
     g_ioH = 0;
 }
 
+// component order of the bytes the engine writes into the IOSurface;
+// set via MacMetalPresent_SetSourceRGBA before the first acquire
+static bool g_ioSrcRGBA = false;
+static bool g_ioIsRGBA  = false; // order the current backing was created with
+
+extern "C" void MacMetalPresent_SetSourceRGBA(int rgba)
+{
+    g_ioSrcRGBA = (rgba != 0);
+}
+
 static bool EnsureIOSurfaceBacking(int w, int h)
 {
-    if (g_ioSurface && g_ioW == w && g_ioH == h)
+    if (g_ioSurface && g_ioW == w && g_ioH == h && g_ioIsRGBA == g_ioSrcRGBA)
         return true;
 
     ReleaseIOSurfaceBacking();
@@ -227,7 +237,7 @@ static bool EnsureIOSurfaceBacking(int w, int h)
         (id)kIOSurfaceWidth:           @(w),
         (id)kIOSurfaceHeight:          @(h),
         (id)kIOSurfaceBytesPerElement: @(4),
-        (id)kIOSurfacePixelFormat:     @((uint32_t)'BGRA'),
+        (id)kIOSurfacePixelFormat:     @((uint32_t)(g_ioSrcRGBA ? 'RGBA' : 'BGRA')),
     };
     g_ioSurface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
     if (g_ioSurface == nullptr) {
@@ -236,7 +246,8 @@ static bool EnsureIOSurfaceBacking(int w, int h)
     }
 
     MTLTextureDescriptor* d =
-        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(g_ioSrcRGBA ? MTLPixelFormatRGBA8Unorm
+                                                                              : MTLPixelFormatBGRA8Unorm)
                                                            width:(NSUInteger)w
                                                           height:(NSUInteger)h
                                                        mipmapped:NO];
@@ -251,6 +262,7 @@ static bool EnsureIOSurfaceBacking(int w, int h)
 
     g_ioW = w;
     g_ioH = h;
+    g_ioIsRGBA = g_ioSrcRGBA;
     // Drawable size must match the layer's *natural* backing
     // pixel count, not the IOSurface size. With SPRING_MAC_NO_RETINA the
     // IOSurface is at logical (1x) res while the layer's backing is Retina
