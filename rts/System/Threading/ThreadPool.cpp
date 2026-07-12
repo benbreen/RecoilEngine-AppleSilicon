@@ -59,7 +59,19 @@ struct ThreadStats {
 
 
 // external background threads which are only joined on exit
-static std::vector< spring::thread > extThreads;
+// on the fatal-error path ExitSpringProcess calls exit() from a helper thread,
+// bypassing SpringApp::Kill/ClearExtJobs; static destruction then reaches this
+// vector while entries are still joinable and destroying a joinable std::thread
+// terminates (observed SIGABRT on macOS) — detach leftovers instead
+struct ExtThreadVector : public std::vector< spring::thread > {
+	~ExtThreadVector() {
+		for (auto& t: *this) {
+			if (t.joinable())
+				t.detach();
+		}
+	}
+};
+static ExtThreadVector extThreads;
 static std::vector< std::future<void> > extFutures;
 
 bool ThreadPool::inMultiThreadedSection;
@@ -681,7 +693,8 @@ void AddExtJob(std::future<void>&& f) {
 
 static void JoinExtThreads() {
 	for (auto& t: extThreads) {
-		t.join();
+		if (t.joinable())
+			t.join();
 	}
 
 	extThreads.clear();
