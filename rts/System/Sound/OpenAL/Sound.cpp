@@ -345,12 +345,25 @@ bool CSound::Mute()
 	return mute;
 }
 
-void CSound::DeviceChanged(uint32_t sdlDeviceIndex)
+void CSound::DeviceChanged(uint32_t sdlDeviceIndex, bool added)
 {
 	// handles SDL_AUDIODEVICEREMOVED and SDL_AUDIODEVICEADDED
 
-	if (!hasAlcSoftLoopBack || sdlDeviceIndex != sdlDeviceID)
+	if (!hasAlcSoftLoopBack)
 		return;
+
+	if (added) {
+		// for ADDED events 'sdlDeviceIndex' is a device *index*, not an instance
+		// id — it must not be compared against sdlDeviceID (collision tears down
+		// a working device mid-playback; on macOS device-list churn made this a
+		// storm that crashed live games). A new device only matters if we have
+		// no working output: then try to (re)open one.
+		if (sdlDeviceID != 0)
+			return;
+	} else {
+		if (sdlDeviceIndex != sdlDeviceID)
+			return;
+	}
 
 	LOG("[Sound::%s] SDL failed to handle device change, reopening", __func__);
 	// In the default Recoil configuration, the default audio device is initialized via SDL2. (hasAlcSoftLoopBack == true)

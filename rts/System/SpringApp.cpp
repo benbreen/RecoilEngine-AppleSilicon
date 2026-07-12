@@ -1214,11 +1214,19 @@ bool SpringApp::MainEventHandler(const SDL_Event& event)
 		} break;
 		case SDL_AUDIODEVICEREMOVED: {
 			LOG("[SpringApp::%s][SDL_AUDIODEVICEREMOVED][1] type=%u, which=%u, iscapture=%u", __func__, event.adevice.type, event.adevice.which, static_cast<uint32_t>(event.adevice.iscapture));
-			sound->DeviceChanged(event.adevice.which);
+			// Capture (recording) devices never back our playback stream; ignore
+			// them (virtual/loopback device churn, e.g. BlackHole on macOS). For
+			// REMOVED, event.adevice.which is a device instance id.
+			if (!event.adevice.iscapture)
+				sound->DeviceChanged(event.adevice.which, false);
 		} break;
 		case SDL_AUDIODEVICEADDED: {
 			LOG("[SpringApp::%s][SDL_AUDIODEVICEADDED][1] type=%u, which=%u, iscapture=%u", __func__, event.adevice.type, event.adevice.which, static_cast<uint32_t>(event.adevice.iscapture));
-			sound->DeviceChanged(event.adevice.which);
+			// For ADDED, event.adevice.which is a device *index*, not an instance
+			// id; DeviceChanged(_, true) never compares it to sdlDeviceID and only
+			// reopens when no output device is currently held.
+			if (!event.adevice.iscapture)
+				sound->DeviceChanged(event.adevice.which, true);
 		} break;
 		case SDL_QUIT: {
 			gu->globalQuit = true;
