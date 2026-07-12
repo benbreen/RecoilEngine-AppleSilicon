@@ -308,9 +308,20 @@ static bool InitEGLContext(SDL_Window* window, int major, int minor) {
 static void DestroyEGLContext() {
     if (g_eglDisplay != EGL_NO_DISPLAY) {
         eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        if (g_eglContext != EGL_NO_CONTEXT) eglDestroyContext(g_eglDisplay, g_eglContext);
-        if (g_eglSurface != EGL_NO_SURFACE) eglDestroySurface(g_eglDisplay, g_eglSurface);
-        eglTerminate(g_eglDisplay);
+        // Actually destroying the context at process exit is racy in the
+        // Zink->KosmicKrisp stack: zink_context_destroy -> vkQueueWaitIdle
+        // submits a signal event to a Metal command buffer that may already
+        // be tearing down, Metal raises an NSException, and the process dies
+        // with SIGABRT (seen after a long GUI session, f=45k game; .ips in
+        // logs/spring-2026-07-09-164234.ips). We are exiting anyway — the OS
+        // reclaims the GPU objects — so skip the destruction ("fast exit").
+        // Set SPRING_EGL_FULL_TEARDOWN=1 to restore it when debugging the
+        // driver race itself.
+        if (getenv("SPRING_EGL_FULL_TEARDOWN") != nullptr) {
+            if (g_eglContext != EGL_NO_CONTEXT) eglDestroyContext(g_eglDisplay, g_eglContext);
+            if (g_eglSurface != EGL_NO_SURFACE) eglDestroySurface(g_eglDisplay, g_eglSurface);
+            eglTerminate(g_eglDisplay);
+        }
     }
     g_eglDisplay = EGL_NO_DISPLAY;
     g_eglContext = EGL_NO_CONTEXT;
