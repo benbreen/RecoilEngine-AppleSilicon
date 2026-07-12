@@ -97,6 +97,10 @@ static const DefaultBinding defaultBindings[] = {
 	{    "Any+escape", "edit_escape"    },
 
 	{ "Ctrl+v", "pastetext" },
+	// NB no "meta+v" here for macOS Cmd+V: the engine's "meta" is the
+	// FakeMetaKey (space by default), NOT the physical Cmd key — such a
+	// binding would fire on space+V while typing. Cmd-clipboard for text
+	// fields is handled at the input layer (LuaHandle KeyPress/KeyRelease).
 
 	{ "Any+home", "increaseViewRadius" },
 	{ "Any+end",  "decreaseViewRadius" },

@@ -3141,9 +3141,26 @@ bool CLuaHandle::KeyPress(int keyCode, int scanCode, bool isRepeat)
 	//FIXME we should never had started using directly SDL consts, somaeday we should weakly force lua-devs to fix their code
 	lua_pushinteger(L, SDL21_keysyms(keyCode));
 
+	bool ctrlMod = !!KeyInput::GetKeyModState(KMOD_CTRL);
+#if defined(__APPLE__)
+	// macOS clipboard idiom: Cmd + C/V/X/A/Z is copy/paste/cut/select-all/
+	// undo. Game UIs (Chobby edit boxes, in-game chat) check the ctrl
+	// modifier for these, so present ctrl for exactly these keys when Cmd is
+	// held. NB the PHYSICAL Cmd key must be read from the raw SDL mod state:
+	// the engine's KeyInput repurposes KMOD_GUI for the FakeMetaKey (space by
+	// default, see CKeyBindings), overwriting the real GUI-key state every
+	// update. Real Ctrl is unaffected. Unsynced input only; no sim effect.
+	if (!ctrlMod && ((SDL_GetModState() & KMOD_GUI) != 0)) {
+		switch (keyCode) {
+			case SDLK_c: case SDLK_v: case SDLK_x: case SDLK_a: case SDLK_z:
+				ctrlMod = true; break;
+			default: break;
+		}
+	}
+#endif
 	lua_createtable(L, 0, 4);
 	HSTR_PUSH_BOOL(L, "alt",   !!KeyInput::GetKeyModState(KMOD_ALT));
-	HSTR_PUSH_BOOL(L, "ctrl",  !!KeyInput::GetKeyModState(KMOD_CTRL));
+	HSTR_PUSH_BOOL(L, "ctrl",  ctrlMod);
 	HSTR_PUSH_BOOL(L, "meta",  !!KeyInput::GetKeyModState(KMOD_GUI));
 	HSTR_PUSH_BOOL(L, "shift", !!KeyInput::GetKeyModState(KMOD_SHIFT));
 
@@ -3204,9 +3221,26 @@ bool CLuaHandle::KeyRelease(int keyCode, int scanCode)
 
 	lua_pushinteger(L, SDL21_keysyms(keyCode));
 
+	bool ctrlMod = !!KeyInput::GetKeyModState(KMOD_CTRL);
+#if defined(__APPLE__)
+	// macOS clipboard idiom: Cmd + C/V/X/A/Z is copy/paste/cut/select-all/
+	// undo. Game UIs (Chobby edit boxes, in-game chat) check the ctrl
+	// modifier for these, so present ctrl for exactly these keys when Cmd is
+	// held. NB the PHYSICAL Cmd key must be read from the raw SDL mod state:
+	// the engine's KeyInput repurposes KMOD_GUI for the FakeMetaKey (space by
+	// default, see CKeyBindings), overwriting the real GUI-key state every
+	// update. Real Ctrl is unaffected. Unsynced input only; no sim effect.
+	if (!ctrlMod && ((SDL_GetModState() & KMOD_GUI) != 0)) {
+		switch (keyCode) {
+			case SDLK_c: case SDLK_v: case SDLK_x: case SDLK_a: case SDLK_z:
+				ctrlMod = true; break;
+			default: break;
+		}
+	}
+#endif
 	lua_createtable(L, 0, 4);
 	HSTR_PUSH_BOOL(L, "alt",   !!KeyInput::GetKeyModState(KMOD_ALT));
-	HSTR_PUSH_BOOL(L, "ctrl",  !!KeyInput::GetKeyModState(KMOD_CTRL));
+	HSTR_PUSH_BOOL(L, "ctrl",  ctrlMod);
 	HSTR_PUSH_BOOL(L, "meta",  !!KeyInput::GetKeyModState(KMOD_GUI));
 	HSTR_PUSH_BOOL(L, "shift", !!KeyInput::GetKeyModState(KMOD_SHIFT));
 
