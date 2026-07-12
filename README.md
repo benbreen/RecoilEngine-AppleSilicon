@@ -15,7 +15,7 @@ The result runs **natively on Apple Silicon Macs**: arm64 end to end, OpenGL 4.6
 compatibility profile via Mesa's Zink on
 [KosmicKrisp](https://lunarg.com/kosmickrisp/) (Vulkan-on-Metal), no Rosetta,
 no fidelity compromises. Upstream's own README is
-[README.markdown](README.markdown); this file covers the macOS port.
+[README-upstream.markdown](README-upstream.markdown); this file covers the macOS port.
 
 Pinned to engine version **2025.06.24** — the version the live BAR fleet
 runs — so it plays with, and simulates bit-identically to, the official
