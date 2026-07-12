@@ -31,10 +31,39 @@
 #include <pthread/qos.h>
 #include <atomic>
 
+#ifndef UNIT_TEST
+CONFIG(int, MacWorkerQos).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: sync-pool ThreadPool workers request USER_INITIATED QoS (prefer the performance cluster). Runtime-changeable.");
+#endif
+
 namespace ThreadPool {
-	// -1 = unset (env seeds it at worker start), 0 = default QoS, 1 = USER_INITIATED
-	static std::atomic<int> macWorkerQos{-1};
-	void SetMacWorkerQosHint(int v) { macWorkerQos.store(v != 0 ? 1 : 0, std::memory_order_relaxed); }
+	// sync-pool worker QoS policy: 1 = request USER_INITIATED (prefer the
+	// performance cluster), 0 = scheduler default. Written on the main thread
+	// (config observer below), read by workers — hence atomic.
+	static std::atomic<int> macWorkerQos{1};
+
+	// mirror the MacWorkerQos config into the atomic and keep it current
+	// through a config observer (runtime-changeable so thermal-drift-free
+	// phased A/Bs can flip it mid-run); seeded from SetThreadCount, where
+	// configHandler is up in every binary that spawns workers
+	#ifndef UNIT_TEST
+	struct MacWorkerQosObserver {
+		void ConfigNotify(const std::string& /*key*/, const std::string& value) {
+			macWorkerQos.store(atoi(value.c_str()) != 0 ? 1 : 0, std::memory_order_relaxed);
+		}
+	};
+	static MacWorkerQosObserver macWorkerQosObserver;
+	#endif
+
+	static void SeedMacWorkerQosFromConfig() {
+	#ifndef UNIT_TEST
+		static bool registered = false;
+		if (registered || configHandler == nullptr)
+			return;
+		registered = true;
+		macWorkerQos.store(configHandler->GetInt("MacWorkerQos") != 0 ? 1 : 0, std::memory_order_relaxed);
+		configHandler->NotifyOnChange(&macWorkerQosObserver, {"MacWorkerQos"});
+	#endif
+	}
 }
 #endif
 
@@ -242,17 +271,9 @@ static void WorkerLoop(int tid, bool async)
 	// the efficiency cluster, and the SLOWEST worker gates every parallel-for
 	// task group (sim pathing, drawer updates). Hint sync-pool workers onto
 	// the P cluster; the async pool is true background work and stays put.
-	// Runtime-changeable (SetMacWorkerQosHint / MacWorkerQos config) so
-	// thermal-drift-free phased A/Bs can flip it mid-run; env
-	// SPRING_MAC_WORKER_QOS seeds the initial value (default on).
+	// Governed by the MacWorkerQos config (see SeedMacWorkerQosFromConfig).
 	int appliedQos = -1;
 	if (!async) {
-		static const int envQos = []() {
-			const char* s = getenv("SPRING_MAC_WORKER_QOS");
-			return (s == nullptr || atoi(s) != 0) ? 1 : 0;
-		}();
-		if (ThreadPool::macWorkerQos.load(std::memory_order_relaxed) < 0)
-			ThreadPool::macWorkerQos.store(envQos, std::memory_order_relaxed);
 		const qos_class_t prev = qos_class_self();
 		appliedQos = ThreadPool::macWorkerQos.load(std::memory_order_relaxed);
 		if (appliedQos == 1)
@@ -275,7 +296,7 @@ static void WorkerLoop(int tid, bool async)
 		// re-apply on runtime toggle (one relaxed atomic load per wake)
 		if (!async) {
 			const int want = ThreadPool::macWorkerQos.load(std::memory_order_relaxed);
-			if (want >= 0 && want != appliedQos) {
+			if (want != appliedQos) {
 				pthread_set_qos_class_self_np(want == 1 ? QOS_CLASS_USER_INITIATED : QOS_CLASS_DEFAULT, 0);
 				appliedQos = want;
 			}
@@ -515,6 +536,10 @@ void SetThreadCount(int wantedNumThreads)
 {
 	const int curNumThreads = GetNumThreads(); // includes main
 	const int wtdNumThreads = std::clamp(wantedNumThreads, 1, GetMaxThreads());
+
+	#if defined(__APPLE__)
+	SeedMacWorkerQosFromConfig();
+	#endif
 
 	constexpr const char* fmts[] = {
 		"[ThreadPool::%s][1] wanted=%d current=%d maximum=%d (init=%d)",

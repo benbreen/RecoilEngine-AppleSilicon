@@ -204,9 +204,15 @@ set(sources_engine_System
 ### only use the target platform related directory
 if     (APPLE)
 	make_global_var(sources_engine_System_Threading ${sources_engine_System_Threading} ${sources_engine_System_Threading_Mac})
+	# MacPresentBackend is the EGL/CAMetalLayer present backend: it needs the
+	# engine's full include env (SDL, EGL, glad, ConfigHandler) so it lives on
+	# the engine source list only, NOT in the lean platform_sources lib (which
+	# compiles the include-minimal Mac shims like MetalPresent.mm/MessageBox.cpp
+	# without -Irts/SDL/EGL). Keep it beside GlobalRendering, its former home.
 	make_global_var(sources_engine_System
 			${sources_engine_System}
 			${sources_engine_System_Platform_Mac}
+			"${CMAKE_CURRENT_SOURCE_DIR}/Platform/Mac/MacPresentBackend.mm"
 			${sources_engine_System_Threading}
 		)
 elseif (UNIX)

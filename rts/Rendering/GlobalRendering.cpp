@@ -9,364 +9,11 @@
 #include "GlobalRendering.h"
 
 #if defined(__APPLE__) && !defined(HEADLESS)
-#include <EGL/egl.h>
-#include <SDL_syswm.h>
-#include <objc/message.h>
-#include <objc/runtime.h>
-#include "System/Platform/Mac/MetalPresent.h"
-#include "System/Log/ILog.h"
-
-// step-by-step bootstrap tracing; errors and the one-line summaries below
-// stay in all builds
-#ifdef SPRING_MAC_DIAGNOSTICS
-#define MAC_DLOG(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define MAC_DLOG(...) ((void)0)
+// macOS renders via surfaceless EGL (Zink -> KosmicKrisp -> Metal) and
+// presents manually onto a CAMetalLayer; the whole context + present
+// lifecycle lives behind this seam.
+#include "System/Platform/Mac/MacPresentBackend.h"
 #endif
-
-static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
-static EGLContext g_eglContext = EGL_NO_CONTEXT;
-static EGLSurface g_eglSurface = EGL_NO_SURFACE;
-static EGLConfig  g_eglConfig  = nullptr;  // saved so the pbuffer can be recreated on resize
-static void*      g_metalLayer = nullptr; // CAMetalLayer attached to the window's NSView
-static int        g_pbufW = 1280;         // pbuffer (default framebuffer) dimensions
-static int        g_pbufH = 720;
-static std::vector<unsigned char> g_presentBuf; // reused glReadPixels staging buffer
-
-// SPRING_MAC_DIAGNOSTICS compiles in the heavier macOS diagnostics (headless
-// frame capture, per-frame present timing, raw-frame dumps, the present
-// tracer bullet). Release builds carry none of that code. Configure with
-// cmake -DSPRING_MAC_DIAGNOSTICS=ON.
-//
-// A truly zero-copy present (render the engine FBO directly into the
-// IOSurface that Metal samples — no readback at all) is blocked on Mesa
-// upstream work: KosmicKrisp's VK_EXT_external_memory_metal needs to grow
-// IOSurface/MTLTexture handle support (today it only handles MTLHeap), and
-// Zink needs a new MESA_memory_object_metal GL extension to consume the
-// resulting VkImage as a GL FBO color attachment. Estimated ~1 month of
-// focused upstream work — see docs/IMPROVEMENTS.md for the roadmap.
-
-static void* GetNSViewFromSDLWindow(SDL_Window* window) {
-    SDL_SysWMinfo info;
-    SDL_VERSION(&info.version);
-    if (!SDL_GetWindowWMInfo(window, &info))
-        return nullptr;
-    id nswindow = (id)info.info.cocoa.window;
-    id view = ((id(*)(id, SEL))objc_msgSend)(nswindow, sel_registerName("contentView"));
-
-    // Set up CAMetalLayer on the view BEFORE passing to EGL
-    // This prevents crashes in wsi_metal_layer_size
-    Class CAMetalLayerClass = objc_getClass("CAMetalLayer");
-    if (CAMetalLayerClass && view) {
-        // [view setWantsLayer:YES]
-        ((void(*)(id, SEL, BOOL))objc_msgSend)(view, sel_registerName("setWantsLayer:"), YES);
-
-        // Create CAMetalLayer
-        id metalLayer = ((id(*)(id, SEL))objc_msgSend)((id)CAMetalLayerClass, sel_registerName("layer"));
-        if (metalLayer) {
-            // Get view bounds
-            typedef struct { double x, y, w, h; } CGRectD;
-            CGRectD (*getBounds)(id, SEL) = (CGRectD(*)(id, SEL))objc_msgSend;
-            CGRectD bounds = getBounds(view, sel_registerName("bounds"));
-
-            // [metalLayer setFrame:bounds]
-            ((void(*)(id, SEL, CGRectD))objc_msgSend)(metalLayer, sel_registerName("setFrame:"), bounds);
-
-            // [metalLayer setOpaque:YES]
-            ((void(*)(id, SEL, BOOL))objc_msgSend)(metalLayer, sel_registerName("setOpaque:"), YES);
-
-            // Get backing scale factor: [view window] -> [window backingScaleFactor]
-            id win = ((id(*)(id, SEL))objc_msgSend)(view, sel_registerName("window"));
-            if (win) {
-                double (*getScale)(id, SEL) = (double(*)(id, SEL))objc_msgSend;
-                double scale = getScale(win, sel_registerName("backingScaleFactor"));
-                // [metalLayer setContentsScale:scale]
-                ((void(*)(id, SEL, double))objc_msgSend)(metalLayer, sel_registerName("setContentsScale:"), scale);
-            }
-
-            // [view setLayer:metalLayer]
-            ((void(*)(id, SEL, id))objc_msgSend)(view, sel_registerName("setLayer:"), metalLayer);
-
-            return (void*)metalLayer;
-        }
-    }
-    return (void*)view;
-}
-
-// Returns the SDL window's NSWindow.backingScaleFactor (1.0 on non-Retina,
-// 2.0 on standard Retina). Used to size the pbuffer (= GL default framebuffer)
-// in physical pixels so full-resolution rendering isn't clipped.
-static double GetBackingScaleFactor(SDL_Window* window) {
-    SDL_SysWMinfo wmInfo;
-    SDL_VERSION(&wmInfo.version);
-    if (!SDL_GetWindowWMInfo(window, &wmInfo))
-        return 1.0;
-
-    id nswindow = (id)wmInfo.info.cocoa.window;
-    if (!nswindow)
-        return 1.0;
-
-    double (*getScale)(id, SEL) = (double(*)(id, SEL))objc_msgSend;
-    double scale = getScale(nswindow, sel_registerName("backingScaleFactor"));
-    return (scale > 0.0) ? scale : 1.0;
-}
-
-static bool InitEGLContext(SDL_Window* window, int major, int minor) {
-    // Default the KosmicKrisp Metal shader compiler to fast math (what native
-    // GL drivers effectively run). Safe+Precise (KK's Vulkan-conformance
-    // default) inflates ALU and register pressure — measured 1598 shader
-    // spill events and 32→51.5 fps on the m7 arena from this alone.
-    // Overridable: export KK_MATH_MODE=safe|relaxed|fast before launch.
-    setenv("KK_MATH_MODE", "fast", 0); // 0 = don't overwrite user's value
-    MAC_DLOG("[EGL] eglGetDisplay(EGL_DEFAULT_DISPLAY)...\n");
-    g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    MAC_DLOG("[EGL] eglGetDisplay -> %p (lastError=0x%x)\n", (void*)g_eglDisplay, eglGetError());
-    if (g_eglDisplay == EGL_NO_DISPLAY) return false;
-
-    EGLint eglMajor = 0, eglMinor = 0;
-    EGLBoolean initOk = eglInitialize(g_eglDisplay, &eglMajor, &eglMinor);
-    MAC_DLOG("[EGL] eglInitialize -> %d (version %d.%d, lastError=0x%x)\n",
-            (int)initOk, eglMajor, eglMinor, eglGetError());
-    if (!initOk) return false;
-
-    const char* vendor   = eglQueryString(g_eglDisplay, EGL_VENDOR);
-    const char* version  = eglQueryString(g_eglDisplay, EGL_VERSION);
-    const char* clientApis = eglQueryString(g_eglDisplay, EGL_CLIENT_APIS);
-    MAC_DLOG("[EGL] vendor=%s version=%s clientApis=%s\n",
-            vendor ? vendor : "?", version ? version : "?", clientApis ? clientApis : "?");
-
-    EGLBoolean bindOk = eglBindAPI(EGL_OPENGL_API);
-    MAC_DLOG("[EGL] eglBindAPI(EGL_OPENGL_API) -> %d (lastError=0x%x)\n",
-            (int)bindOk, eglGetError());
-
-    // On macOS with Mesa-surfaceless EGL, EGL_WINDOW_BIT is unsupported.
-    // The actual presentation happens via the CAMetalLayer + KosmicKrisp WSI
-    // (Vulkan -> Metal), so we only need a pbuffer-capable config here.
-    EGLint configAttribs[] = {
-        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
-        EGL_DEPTH_SIZE, 24, EGL_STENCIL_SIZE, 8,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-        EGL_NONE
-    };
-    EGLConfig eglConfig;
-    EGLint numConfigs = 0;
-    EGLBoolean cfgOk = eglChooseConfig(g_eglDisplay, configAttribs, &eglConfig, 1, &numConfigs);
-    MAC_DLOG("[EGL] eglChooseConfig -> %d (numConfigs=%d, lastError=0x%x)\n",
-            (int)cfgOk, numConfigs, eglGetError());
-    if (!cfgOk || numConfigs == 0)
-        return false;
-    g_eglConfig = eglConfig; // remember for pbuffer recreation on window resize
-
-    void* nativeView = GetNSViewFromSDLWindow(window);
-    g_metalLayer = nativeView; // CAMetalLayer for the manual present path
-
-    // Size the pbuffer (= the GL default framebuffer) to the window's *backing*
-    // pixel size, so the engine's full-resolution (Retina) rendering isn't
-    // clipped. SDL_GetWindowSizeInPixels returns logical points on this
-    // surfaceless/borderless setup, so compute backing pixels explicitly via
-    // the window size in points * backingScaleFactor. The manual Metal present
-    // reads this whole buffer back each SwapBuffers.
-    //
-    // glReadPixels of the full Retina pbuffer is the
-    // dominant per-frame cost (measured 40-55ms at 2944x1908). The Metal
-    // present pass linear-samples the IOSurface into the drawable, so we can
-    // render at logical (1x) resolution and let CoreAnimation upscale to
-    // Retina with negligible cost — at ~4x less readback data. Opt in with
-    // SPRING_MAC_NO_RETINA=1.
-    int winW = 0, winH = 0;
-    SDL_GetWindowSize(window, &winW, &winH);
-    const double bsfTrue   = GetBackingScaleFactor(window);
-    const bool   noRetina  = (getenv("SPRING_MAC_NO_RETINA") != nullptr);
-    const double bsf       = noRetina ? 1.0 : bsfTrue;
-    int pxW = (int)(winW * bsf + 0.5);
-    int pxH = (int)(winH * bsf + 0.5);
-    if (pxW <= 0 || pxH <= 0) { pxW = 1280; pxH = 720; }
-    g_pbufW = pxW;
-    g_pbufH = pxH;
-    LOG("[EGL] window %dx%d pts * %.2f scale -> pbuffer %dx%d px%s",
-            winW, winH, bsf, pxW, pxH,
-            noRetina ? " (SPRING_MAC_NO_RETINA=1)" : "");
-    if (noRetina)
-        LOG("[EGL] true backing scale=%.2f; CoreAnimation will upscale", bsfTrue);
-
-    if (nativeView) {
-        g_eglSurface = eglCreateWindowSurface(g_eglDisplay, eglConfig, (EGLNativeWindowType)nativeView, NULL);
-    }
-    if (g_eglSurface == EGL_NO_SURFACE) {
-        EGLint pbAttribs[] = { EGL_WIDTH, g_pbufW, EGL_HEIGHT, g_pbufH, EGL_NONE };
-        g_eglSurface = eglCreatePbufferSurface(g_eglDisplay, eglConfig, pbAttribs);
-        if (g_eglSurface == EGL_NO_SURFACE) return false;
-        MAC_DLOG("[EGL] FALLBACK to PbufferSurface %dx%d surface=%p\n", g_pbufW, g_pbufH, (void*)g_eglSurface);
-    }
-
-    // Dump what the chosen config actually supports.
-    {
-        EGLint cfgRenderable = 0, cfgSurface = 0, cfgConformant = 0;
-        eglGetConfigAttrib(g_eglDisplay, eglConfig, EGL_RENDERABLE_TYPE, &cfgRenderable);
-        eglGetConfigAttrib(g_eglDisplay, eglConfig, EGL_SURFACE_TYPE, &cfgSurface);
-        eglGetConfigAttrib(g_eglDisplay, eglConfig, EGL_CONFORMANT, &cfgConformant);
-        MAC_DLOG("[EGL] Config: renderable=0x%x surfaceType=0x%x conformant=0x%x (OPENGL_BIT=0x%x)\n",
-                cfgRenderable, cfgSurface, cfgConformant, EGL_OPENGL_BIT);
-    }
-    // Prefer a COMPATIBILITY-profile context. Mesa 26.2 Zink grants GL 4.6
-    // compat on KosmicKrisp (verified: "4.6 (Compatibility Profile)"), which is
-    // a strict superset of core: it keeps all modern GL4 features AND the legacy
-    // paths BAR pervasively relies on (immediate mode / glBegin, display lists,
-    // the fixed-function matrix stack, and '#version ... compatibility' GLSL).
-    // This eliminates an otherwise huge per-shader core-profile port. We fall
-    // back to a CORE context if compat is refused, or if SPRING_MAC_GL_CORE is
-    // set to force the old behavior.
-    //
-    // Note: geometry shaders are unavailable regardless of profile because
-    // KosmicKrisp's Vulkan reports geometryShader=false (Metal has no GS stage);
-    // that is a separate problem from the GL profile.
-    const int2 tryVersions[] = {
-        {4,6},{4,5},{4,4},{4,3},{4,2},{4,1},{4,0},{3,3},{3,2}
-    };
-    const bool forceCore = (getenv("SPRING_MAC_GL_CORE") != nullptr);
-
-    if (!forceCore) {
-        EGLint compatAttribs[] = {
-            EGL_CONTEXT_MAJOR_VERSION, 0,
-            EGL_CONTEXT_MINOR_VERSION, 0,
-            EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
-            EGL_NONE
-        };
-        for (const auto& v : tryVersions) {
-            compatAttribs[1] = v.x;
-            compatAttribs[3] = v.y;
-            g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, compatAttribs);
-            EGLint err = eglGetError();
-            MAC_DLOG("[EGL] eglCreateContext(%d.%d COMPAT) -> %p (lastError=0x%x)\n",
-                    v.x, v.y, (void*)g_eglContext, err);
-            if (g_eglContext != EGL_NO_CONTEXT)
-                break;
-        }
-        LOG("%s", g_eglContext != EGL_NO_CONTEXT
-            ? "[EGL] COMPAT profile context obtained."
-            : "[EGL] COMPAT profile unavailable; falling back to CORE.");
-    }
-
-    EGLint contextAttribs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, 0,
-        EGL_CONTEXT_MINOR_VERSION, 0,
-        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-        EGL_NONE
-    };
-    for (const auto& v : tryVersions) {
-        if (g_eglContext != EGL_NO_CONTEXT)
-            break;
-        contextAttribs[1] = v.x;
-        contextAttribs[3] = v.y;
-        g_eglContext = eglCreateContext(g_eglDisplay, eglConfig, EGL_NO_CONTEXT, contextAttribs);
-        EGLint err = eglGetError();
-        MAC_DLOG("[EGL] eglCreateContext(%d.%d core) -> %p (lastError=0x%x)\n",
-                v.x, v.y, (void*)g_eglContext, err);
-        if (g_eglContext != EGL_NO_CONTEXT)
-            break;
-    }
-    (void)major; (void)minor;
-    if (g_eglContext == EGL_NO_CONTEXT) return false;
-
-    EGLBoolean mcOk = eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
-    MAC_DLOG("[EGL] eglMakeCurrent -> %d (lastError=0x%x)\n", (int)mcOk, eglGetError());
-    if (!mcOk)
-        return false;
-
-    // Probe GL via eglGetProcAddress before the engine's glad pass runs.
-    // Using raw types because GL headers aren't included this high in the file.
-    typedef const unsigned char* (*PFN_glGetString)(unsigned int);
-    auto p_glGetString = (PFN_glGetString)eglGetProcAddress("glGetString");
-    if (p_glGetString) {
-        const char* glVer    = (const char*)p_glGetString(0x1F02u);  // GL_VERSION
-        const char* glVendor = (const char*)p_glGetString(0x1F00u);  // GL_VENDOR
-        const char* glRend   = (const char*)p_glGetString(0x1F01u);  // GL_RENDERER
-        const char* glsl     = (const char*)p_glGetString(0x8B8Cu);  // GL_SHADING_LANGUAGE_VERSION
-        MAC_DLOG("[EGL/GL] vendor='%s'\n",   glVendor ? glVendor : "(null)");
-        MAC_DLOG("[EGL/GL] renderer='%s'\n", glRend   ? glRend   : "(null)");
-        MAC_DLOG("[EGL/GL] version='%s'\n",  glVer    ? glVer    : "(null)");
-        MAC_DLOG("[EGL/GL] glsl='%s'\n",     glsl     ? glsl     : "(null)");
-    } else {
-        MAC_DLOG("[EGL/GL] eglGetProcAddress(glGetString) returned NULL\n");
-    }
-
-    // Set up the manual present path now that the layer + context exist.
-    if (!MacMetalPresent_Init(g_metalLayer))
-        LOG_L(L_ERROR, "[EGL] MacMetalPresent_Init failed; window will not show frames");
-
-    return true;
-}
-
-static void DestroyEGLContext() {
-    if (g_eglDisplay != EGL_NO_DISPLAY) {
-        eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        // Actually destroying the context at process exit is racy in the
-        // Zink->KosmicKrisp stack: zink_context_destroy -> vkQueueWaitIdle
-        // submits a signal event to a Metal command buffer that may already
-        // be tearing down, Metal raises an NSException, and the process dies
-        // with SIGABRT (reproduced after long GUI sessions). We are exiting
-        // anyway — the OS
-        // reclaims the GPU objects — so skip the destruction ("fast exit").
-        // Set SPRING_EGL_FULL_TEARDOWN=1 to restore it when debugging the
-        // driver race itself.
-        if (getenv("SPRING_EGL_FULL_TEARDOWN") != nullptr) {
-            if (g_eglContext != EGL_NO_CONTEXT) eglDestroyContext(g_eglDisplay, g_eglContext);
-            if (g_eglSurface != EGL_NO_SURFACE) eglDestroySurface(g_eglDisplay, g_eglSurface);
-            eglTerminate(g_eglDisplay);
-        }
-    }
-    g_eglDisplay = EGL_NO_DISPLAY;
-    g_eglContext = EGL_NO_CONTEXT;
-    g_eglSurface = EGL_NO_SURFACE;
-}
-
-// Recreate the pbuffer (the engine's default framebuffer) at the window's
-// current pixel size so the window resizes at true resolution instead of
-// scaling a fixed-size buffer. Called from ReadWindowPosAndSize on resize,
-// before winSize is bound to g_pbufW. No-op if the size is unchanged or the
-// EGL context is not up yet. The CAMetalLayer drawable auto-follows because
-// the present path sizes it from g_pbufW/g_pbufH each frame.
-static void ResizeEGLSurfaceIfNeeded(SDL_Window* window) {
-    if (g_eglDisplay == EGL_NO_DISPLAY || g_eglContext == EGL_NO_CONTEXT || g_eglConfig == nullptr)
-        return;
-
-    int winW = 0, winH = 0;
-    SDL_GetWindowSize(window, &winW, &winH);
-    if (winW <= 0 || winH <= 0)
-        return;
-
-    const bool   noRetina = (getenv("SPRING_MAC_NO_RETINA") != nullptr);
-    const double bsf      = noRetina ? 1.0 : GetBackingScaleFactor(window);
-    const int    pxW      = std::max(1, int(std::lround(double(winW) * bsf)));
-    const int    pxH      = std::max(1, int(std::lround(double(winH) * bsf)));
-
-    if (pxW == g_pbufW && pxH == g_pbufH)
-        return; // size unchanged
-
-    EGLint pbAttribs[] = { EGL_WIDTH, pxW, EGL_HEIGHT, pxH, EGL_NONE };
-    EGLSurface newSurface = eglCreatePbufferSurface(g_eglDisplay, g_eglConfig, pbAttribs);
-    if (newSurface == EGL_NO_SURFACE) {
-        LOG_L(L_WARNING, "[EGL] resize: eglCreatePbufferSurface %dx%d failed (0x%x); keeping %dx%d",
-                pxW, pxH, eglGetError(), g_pbufW, g_pbufH);
-        return; // keep the old surface rather than lose the context
-    }
-
-    if (!eglMakeCurrent(g_eglDisplay, newSurface, newSurface, g_eglContext)) {
-        LOG_L(L_WARNING, "[EGL] resize: eglMakeCurrent failed (0x%x); reverting", eglGetError());
-        eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
-        eglDestroySurface(g_eglDisplay, newSurface);
-        return;
-    }
-
-    if (g_eglSurface != EGL_NO_SURFACE)
-        eglDestroySurface(g_eglDisplay, g_eglSurface);
-    g_eglSurface = newSurface;
-    g_pbufW = pxW;
-    g_pbufH = pxH;
-    LOG("[EGL] resize: pbuffer -> %dx%d px (window %dx%d * %.2f)", pxW, pxH, winW, winH, bsf);
-}
-#endif // __APPLE__ && !HEADLESS
 
 #include "GlobalRenderingInfo.h"
 #include "Rendering/VerticalSync.h"
@@ -407,11 +54,6 @@ static void ResizeEGLSurfaceIfNeeded(SDL_Window* window) {
 CONFIG(bool, DebugGL).defaultValue(false).description("Enables GL debug-context and output. (see GL_ARB_debug_output)");
 CONFIG(bool, DebugGLStacktraces).defaultValue(false).description("Create a stacktrace when an OpenGL error occurs");
 CONFIG(bool, DebugGLReportGroups).defaultValue(false).description("Show OpenGL PUSH/POP groups in the GL debug");
-
-#if defined(__APPLE__) && !defined(HEADLESS)
-CONFIG(int, MacPresentDirect).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: present shader reads the readback ring directly from unified memory (0 = IOSurface staging path). Runtime-changeable so perf A/B legs can share one seeked process.");
-CONFIG(int, MacWorkerQos).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: sync-pool ThreadPool workers request USER_INITIATED QoS (prefer the performance cluster). Runtime-changeable.");
-#endif
 
 CONFIG(int, GLContextMajorVersion).defaultValue(3).minimumValue(3).maximumValue(4);
 CONFIG(int, GLContextMinorVersion).defaultValue(0).minimumValue(0).maximumValue(5);
@@ -968,18 +610,18 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 #endif
 
 #if defined(__APPLE__) && !defined(HEADLESS)
-	if (!InitEGLContext(sdlWindow, minCtx.x, minCtx.y)) {
+	if (!MacPresent::CreateContext(sdlWindow)) {
 		handleerror(nullptr, "Failed to create EGL context on macOS", "ERROR", MBF_OK | MBF_EXCL);
 		return false;
 	}
-	glContext = (SDL_GLContext)g_eglContext;
+	glContext = (SDL_GLContext)MacPresent::GetGLContext();
 #else
 	if ((glContext = CreateGLContext(minCtx)) == nullptr)
 		return false;
 #endif
 
 #if defined(__APPLE__) && !defined(HEADLESS)
-	gladLoadGLLoader((GLADloadproc)eglGetProcAddress);
+	gladLoadGLLoader((GLADloadproc)MacPresent::GetGLLoadProc());
 #else
 	gladLoadGL();
 #endif
@@ -988,34 +630,9 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 #endif
 
 #if defined(__APPLE__) && !defined(HEADLESS) && defined(SPRING_MAC_DIAGNOSTICS)
-	// Tracer bullet: when SPRING_MAC_PRESENT_TEST is set, flash the window
-	// red/blue for ~8s by rendering a clear and presenting it to the window's
-	// CAMetalLayer via the manual Metal present path (glReadPixels -> MTLTexture
-	// -> blit to drawable). If the window now flashes, the manual present works
-	// and can be wired into SwapBuffers for real frames.
-	if (const char* e = getenv("SPRING_MAC_PRESENT_TEST"); e != nullptr && e[0] == '1') {
-		const bool metalOk = MacMetalPresent_Init(g_metalLayer);
-		GLint vp[4] = {0, 0, 1280, 720};
-		glGetIntegerv(GL_VIEWPORT, vp);
-		const int rw = (vp[2] > 0) ? vp[2] : 1280;
-		const int rh = (vp[3] > 0) ? vp[3] : 720;
-		std::vector<unsigned char> buf(static_cast<size_t>(rw) * rh * 4);
-		fprintf(stderr, "[PRESENT_TEST] metalInit=%d flashing ~8s via Metal (%dx%d)\n", (int)metalOk, rw, rh);
-		for (int i = 0; i < 16; i++) {
-			const bool odd = (i % 2) != 0;
-			glClearColor(odd ? 1.0f : 0.0f, 0.15f, odd ? 0.0f : 1.0f, 1.0f);
-			glClear(GL_COLOR_BUFFER_BIT);
-			glReadPixels(0, 0, rw, rh, GL_BGRA, GL_UNSIGNED_BYTE, buf.data());
-			MacMetalPresent_PresentBGRA(rw, rh, buf.data(), false); // solid color: no flip needed
-			fprintf(stderr, "[PRESENT_TEST] frame %d color=%s\n", i, odd ? "RED" : "BLUE");
-			// Pump the Cocoa run loop so CoreAnimation actually composites each
-			// presented frame (otherwise only the final frame shows on screen).
-			SDL_PumpEvents();
-			SDL_Event ev; while (SDL_PollEvent(&ev)) {}
-			SDL_Delay(500);
-		}
-		fprintf(stderr, "[PRESENT_TEST] done\n");
-	}
+	// SPRING_MAC_PRESENT_TEST: flash the window red/blue via the manual Metal
+	// present path to verify presentation independently of engine rendering
+	MacPresent::DiagRunPresentTest();
 #endif
 
 	if (!CheckGLContextVersion(minCtx)) {
@@ -1039,10 +656,7 @@ bool CGlobalRendering::CreateWindowAndContext(const char* title)
 
 void CGlobalRendering::MakeCurrentContext(bool clear) const {
 #if defined(__APPLE__) && !defined(HEADLESS)
-	if (clear)
-		eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-	else
-		eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext);
+	MacPresent::MakeCurrent(clear);
 #else
 	SDL_GL_MakeCurrent(sdlWindow, clear ? nullptr : glContext);
 #endif
@@ -1066,7 +680,7 @@ void CGlobalRendering::DestroyWindowAndContext() {
 	// SDL_GL_DeleteContext treats an EGL context as an SDL one and crashes on
 	// shutdown (DispatchedDeleteContext dereferences a bad pointer). Tear it
 	// down through EGL instead.
-	DestroyEGLContext();
+	MacPresent::DestroyContext();
 	#else
 	if (glContext)
 		SDL_GL_DeleteContext(glContext);
@@ -1114,285 +728,6 @@ void CGlobalRendering::PostInit() {
 	UpdateTimer();
 }
 
-#if defined(__APPLE__) && !defined(HEADLESS)
-#include <unistd.h> // getpagesize (direct-present ring alignment)
-#include "System/Threading/ThreadPool.h" // SetMacWorkerQosHint
-// Staging-texture ring for PIPELINED readback (fallback when the GPU-pack
-// ring is disabled; see SwapBuffers).
-//
-// Why: Zink+KosmicKrisp lack the caps for Mesa's GPU PBO-pack fast path on
-// TEXTURE readbacks, so a glReadPixels of the just-rendered frame falls back
-// to zink_image_map -> batch_usage_wait: a synchronous CPU map that waits for
-// the ENTIRE GPU pipeline to drain. Measured at ~65% of frame time in heavy
-// scenes (2700-unit arena: 114ms mean swap, 5-12 fps).
-//
-// How: frame N blits the default framebuffer into ring[N % RB_RING]
-// (GPU-queued, returns immediately) and reads back ring[(N - lag) % RB_RING],
-// whose GPU work completed `lag` frames ago — the fallback map then has
-// nothing to wait for. Costs `lag` frames of present latency (default 2;
-// SPRING_MAC_PRESENT_LAG=0/1/2, 0 = synchronous readback of this frame).
-static constexpr int RB_RING = 3;
-static unsigned int g_rbFBO[RB_RING] = { 0, 0, 0 };
-static unsigned int g_rbTex[RB_RING] = { 0, 0, 0 };
-static int  g_rbW = 0, g_rbH = 0;
-static long g_rbFrame = 0;
-
-// GPU-pack PBO ring (the current default; see SwapBuffers). Reads the frame
-// into a pixel-pack BUFFER via Mesa's compute-pack path (st_pbo download):
-// non-blocking on the CPU AND queue-depth-independent, unlike any texture
-// readback, because mapping an idle linear buffer needs no new GPU work.
-// Requirements discovered with testkit/readback-bench.c:
-//  - a PIXEL_PACK buffer must be bound (raw-pointer reads never GPU-pack) and
-//  - the read format must match the framebuffer's component order exactly
-//    (a swizzling read falls off the fast path -> sync texture map, ~30ms in
-//    heavy scenes vs ~1.3ms here at 5120x2160).
-static constexpr int PP_RING = 4;
-static unsigned int g_ppPBO[PP_RING] = { 0, 0, 0 };
-static int  g_ppW = 0, g_ppH = 0;
-static long g_ppFrame = 0;
-
-static bool EnsureGpuPackRing(int w, int h)
-{
-	if (g_ppPBO[0] != 0 && g_ppW == w && g_ppH == h)
-		return true;
-	if (g_ppPBO[0] == 0)
-		glGenBuffers(PP_RING, g_ppPBO);
-	for (int i = 0; i < PP_RING; ++i) {
-		glBindBuffer(GL_PIXEL_PACK_BUFFER, g_ppPBO[i]);
-		glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)w * h * 4, nullptr, GL_STREAM_READ);
-	}
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-	g_ppW = w;
-	g_ppH = h;
-	g_ppFrame = 0;
-	static bool s_logged = false;
-	if (!s_logged) {
-		fprintf(stderr, "[spring-mac/gpupack] GPU-pack PBO-ring readback active (%dx%d)\n", w, h);
-		s_logged = true;
-	}
-	return true;
-}
-
-static bool EnsureStagingRing(int w, int h)
-{
-	if (g_rbFBO[0] != 0 && g_rbW == w && g_rbH == h)
-		return true;
-	if (g_rbFBO[0] == 0) {
-		glGenFramebuffers(RB_RING, g_rbFBO);
-		glGenTextures(RB_RING, g_rbTex);
-	}
-	GLint prevDrawFBO = 0;
-	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFBO);
-	for (int i = 0; i < RB_RING; ++i) {
-		glBindTexture(GL_TEXTURE_2D, g_rbTex[i]);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_CLAMP_TO_EDGE);
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_rbFBO[i]);
-		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_rbTex[i], 0);
-		const GLenum fst = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
-		if (fst != GL_FRAMEBUFFER_COMPLETE) {
-			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDrawFBO);
-			glBindTexture(GL_TEXTURE_2D, 0);
-			fprintf(stderr, "[spring-mac/ring] staging FBO %d incomplete: 0x%04x\n", i, (unsigned)fst);
-			return false;
-		}
-	}
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDrawFBO);
-	glBindTexture(GL_TEXTURE_2D, 0);
-	g_rbW = w;
-	g_rbH = h;
-	g_rbFrame = 0;
-
-	static bool s_logged = false;
-	if (!s_logged) {
-		fprintf(stderr, "[spring-mac/ring] pipelined staging-ring readback active (%dx%d)\n", w, h);
-		s_logged = true;
-	}
-	return true;
-}
-
-// Direct-present PBO ring (the zero-copy default; see SwapBuffers).
-// Same GPU-pack readback as the PP ring, but the slots are PERSISTENTLY
-// mapped (ARB_buffer_storage) and page-aligned, so the Metal present shader
-// reads the packed pixels straight from unified memory
-// (MacMetalPresent_PresentPixelBuffer): the per-frame CPU map + 44MB memcpy
-// into the IOSurface disappears from the main thread.
-//
-// Ring depth: the presented slot must not be re-packed while a present that
-// reads it is still in flight. Presents pipeline at most 2 deep (budget
-// semaphore in MetalPresent.mm); at lag L a slot is re-packed DP_RING - L
-// frames after its present was queued, so DP_RING = 6 leaves >= 1 frame of
-// margin at the maximum lag of 3. Packing into a persistently-mapped buffer
-// is legal GL (unlike a plain mapped one — the bug class behind the reverted
-// async-copy experiment).
-static constexpr int DP_RING = 6;
-static unsigned int g_dpPBO[DP_RING]   = { 0 };
-static void*        g_dpMap[DP_RING]   = { nullptr };
-static GLsync       g_dpFence[DP_RING] = { nullptr };
-static size_t g_dpAllocBytes = 0;
-static int    g_dpW = 0, g_dpH = 0;
-static long   g_dpFrame = 0;
-static bool   g_dpFailed = false;
-
-static void ReleaseDirectRing()
-{
-	if (g_dpPBO[0] == 0)
-		return;
-	// Metal must drop its wraps of the mapped pointers before we unmap.
-	MacMetalPresent_InvalidatePixelBuffers();
-	for (int i = 0; i < DP_RING; ++i) {
-		if (g_dpFence[i] != nullptr) {
-			glDeleteSync(g_dpFence[i]);
-			g_dpFence[i] = nullptr;
-		}
-		if (g_dpMap[i] != nullptr) {
-			glBindBuffer(GL_PIXEL_PACK_BUFFER, g_dpPBO[i]);
-			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-			g_dpMap[i] = nullptr;
-		}
-	}
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-	glDeleteBuffers(DP_RING, g_dpPBO);
-	std::fill(std::begin(g_dpPBO), std::end(g_dpPBO), 0);
-	g_dpW = g_dpH = 0;
-	g_dpFrame = 0;
-}
-
-static bool EnsureDirectRing(int w, int h)
-{
-	if (g_dpPBO[0] != 0 && g_dpW == w && g_dpH == h)
-		return true;
-	ReleaseDirectRing();
-
-	if (GLAD_GL_ARB_buffer_storage == 0 && !GLAD_GL_VERSION_4_4) {
-		fprintf(stderr, "[spring-mac/direct] no ARB_buffer_storage — direct present unavailable\n");
-		return false;
-	}
-
-	const size_t pageSz     = (size_t)getpagesize();
-	const size_t pixBytes   = (size_t)w * h * 4;
-	const size_t allocBytes = (pixBytes + pageSz - 1) & ~(pageSz - 1); // newBufferWithBytesNoCopy needs page-multiple length
-
-	glGetError(); // clear
-	glGenBuffers(DP_RING, g_dpPBO);
-	for (int i = 0; i < DP_RING; ++i) {
-		glBindBuffer(GL_PIXEL_PACK_BUFFER, g_dpPBO[i]);
-		glBufferStorage(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)allocBytes, nullptr,
-		                GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
-		const GLenum se = glGetError();
-		if (se != GL_NO_ERROR) {
-			fprintf(stderr, "[spring-mac/direct] glBufferStorage failed (slot %d, err 0x%04x)\n", i, se);
-			glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-			ReleaseDirectRing();
-			return false;
-		}
-		g_dpMap[i] = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr)allocBytes,
-		                              GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
-		if (g_dpMap[i] == nullptr || ((uintptr_t)g_dpMap[i] & (pageSz - 1)) != 0) {
-			// unaligned pointers cannot be wrapped by Metal — bail to fallback
-			fprintf(stderr, "[spring-mac/direct] persistent map %s (slot %d, ptr %p)\n",
-			        g_dpMap[i] == nullptr ? "failed" : "not page-aligned", i, g_dpMap[i]);
-			glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-			ReleaseDirectRing();
-			return false;
-		}
-	}
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-	g_dpAllocBytes = allocBytes;
-	g_dpW = w;
-	g_dpH = h;
-	g_dpFrame = 0;
-
-	static bool s_logged = false;
-	if (!s_logged) {
-		fprintf(stderr, "[spring-mac/direct] persistent PBO ring for direct present (%dx%d, %d slots x %zu bytes)\n",
-		        w, h, DP_RING, allocBytes);
-		s_logged = true;
-	}
-	return true;
-}
-
-// Pack this frame into the ring and hand the lag-frames-old slot to the Metal
-// present. Returns false (and latches g_dpFailed) if the path is unavailable —
-// the caller then runs the IOSurface fallback from this frame on.
-static bool DirectPresentFrame(int rdW, int rdH, GLenum readFormat, int lagFrames)
-{
-	if (g_dpFailed)
-		return false;
-	if (!EnsureDirectRing(rdW, rdH)) {
-		g_dpFailed = true;
-		return false;
-	}
-
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-	const int cur = (int)(g_dpFrame % DP_RING);
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, g_dpPBO[cur]);
-	glReadPixels(0, 0, rdW, rdH, readFormat, GL_UNSIGNED_BYTE, nullptr);
-	// a silently-failing pack presents stale frames (the async-copy flicker
-	// class); packing into a PERSISTENT map is legal, but verify early on
-	if (g_dpFrame < 100) {
-		const GLenum pe = glGetError();
-		if (pe != GL_NO_ERROR) {
-			fprintf(stderr, "[spring-mac/direct] pack into persistent PBO failed (err 0x%04x) — disabling direct present\n", pe);
-			glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-			g_dpFailed = true;
-			return false;
-		}
-	}
-	if (g_dpFence[cur] != nullptr)
-		glDeleteSync(g_dpFence[cur]);
-	g_dpFence[cur] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-	glFlush(); // submit the pack now; otherwise it rides the NEXT frame's flush
-
-	bool presented = true;
-	if (g_dpFrame >= lagFrames) {
-		// Metal must not read pages the pack compute is still writing. The
-		// CPU map used to guarantee this implicitly by blocking until the
-		// pack completed — and that block doubled as PIPELINE BACKPRESSURE:
-		// removing it entirely (tried: present newest-completed slot, skip
-		// when none) let the main thread run ahead until the GPU sat 5+
-		// frames deep and most presents were SKIPPED — high "rendered" fps,
-		// stale glass. Smoothness is the product, so the wait stays; the
-		// copy removal is still a win everywhere the GPU keeps up.
-		int old = (int)((g_dpFrame - lagFrames) % DP_RING);
-		if (g_dpFence[old] != nullptr &&
-		    glClientWaitSync(g_dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 0) == GL_TIMEOUT_EXPIRED) {
-			static uint64_t s_fenceWaits = 0;
-			++s_fenceWaits;
-			if ((s_fenceWaits & (s_fenceWaits - 1)) == 0) // log 1,2,4,8,...
-				fprintf(stderr, "[spring-mac/direct] lag-%d pack fence not signaled — waiting (GPU behind, x%llu)\n",
-				        lagFrames, (unsigned long long)s_fenceWaits);
-			if (glClientWaitSync(g_dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull) == GL_TIMEOUT_EXPIRED) {
-				// pathological (>100ms): use the newest COMPLETED older slot
-				// instead of reading a buffer mid-write; skip if none
-				old = -1;
-				for (int k = lagFrames + 1; k <= (int)std::min<long>(g_dpFrame, DP_RING - 2); ++k) {
-					const int cand = (int)((g_dpFrame - k) % DP_RING);
-					if (g_dpFence[cand] == nullptr ||
-					    glClientWaitSync(g_dpFence[cand], GL_SYNC_FLUSH_COMMANDS_BIT, 0) != GL_TIMEOUT_EXPIRED) {
-						old = cand;
-						break;
-					}
-				}
-			}
-		}
-		if (old >= 0)
-			presented = MacMetalPresent_PresentPixelBuffer(g_dpMap[old], g_dpAllocBytes, rdW, rdH,
-			                                               readFormat == GL_RGBA, true);
-	}
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-
-	if (!presented) {
-		g_dpFailed = true;
-		return false;
-	}
-	g_dpFrame++;
-	return true;
-}
-#endif
 
 void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 {
@@ -1407,34 +742,10 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 			glClearErrors("GR", __func__, glDebugErrors);
 
 #if defined(__APPLE__) && !defined(HEADLESS) && defined(SPRING_MAC_DIAGNOSTICS)
-		// Headless verification capture. Draw() has already rendered into
-		// the default FBO by the time SwapBuffers() runs, so we can read it
-		// back here even when the actual present/swap is suppressed
-		// (allowSwapBuffers==false, e.g. an unfocused/background launch).
-		// Writes <prefix>.NNNN.raw (uint32 w,h header + w*h*4 BGRA, bottom-up).
-		if (const char* cp = getenv("SPRING_FRAME_CAPTURE")) {
-			if (g_eglDisplay != EGL_NO_DISPLAY && g_eglSurface != EGL_NO_SURFACE && g_pbufW > 0 && g_pbufH > 0) {
-				static int s_cap = 0;
-				static const int s_capEvery = [](){ const char* e = getenv("SPRING_FRAME_CAPTURE_EVERY"); return e ? std::max(1, atoi(e)) : 30; }();
-				static const int s_capLimit = [](){ const char* e = getenv("SPRING_FRAME_CAPTURE_LIMIT"); return e ? atoi(e) * s_capEvery : 1800; }();
-				if ((s_cap % s_capEvery) == 0 && s_cap < s_capLimit) {
-					const size_t need = static_cast<size_t>(g_pbufW) * g_pbufH * 4;
-					if (g_presentBuf.size() < need)
-						g_presentBuf.resize(need);
-					glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-					glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, g_presentBuf.data());
-					char path[1024];
-					snprintf(path, sizeof(path), "%s.%04d.raw", cp, s_cap);
-					if (FILE* f = fopen(path, "wb")) {
-						const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
-						fwrite(hdr, sizeof(hdr), 1, f);
-						fwrite(g_presentBuf.data(), 1, need, f);
-						fclose(f);
-					}
-				}
-				s_cap++;
-			}
-		}
+		// SPRING_FRAME_CAPTURE: headless verification capture of the default
+		// FBO; runs even when the actual present is suppressed below
+		// (allowSwapBuffers==false, e.g. an unfocused/background launch)
+		MacPresent::DiagCaptureFrame();
 #endif
 
 		if (!allowSwapBuffers && !forceSwapBuffers)
@@ -1458,290 +769,9 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 		#endif
 		
 #if defined(__APPLE__) && !defined(HEADLESS)
-		if (g_eglDisplay != EGL_NO_DISPLAY && g_eglSurface != EGL_NO_SURFACE) {
-			// eglSwapBuffers on the (surfaceless) pbuffer presents nowhere, so
-			// read the rendered default framebuffer back and blit it onto the
-			// window's CAMetalLayer via Metal.
-			//
-			// Fast path: glReadPixels writes directly into an IOSurface-backed
-			// MTLTexture (no CPU intermediate buffer, no CPU Y-flip, no
-			// replaceRegion upload — Metal samples the same backing store and
-			// flips during a one-triangle render pass to the drawable).
-			//
-			// Fallback path: SPRING_MAC_LEGACY_PRESENT=1 or AcquireIOSurfaceBuffer
-			// failure routes through the original CPU staging path.
-			const bool wantLegacy = (getenv("SPRING_MAC_LEGACY_PRESENT") != nullptr);
-#ifdef SPRING_MAC_DIAGNOSTICS
-			// Per-frame timing instrumentation. Set SPRING_TIME_PRESENT=1
-			// to log a breakdown of (lock-wait | glReadPixels | Metal present | other)
-			// averaged over every 60 frames. Use to attribute the per-frame cost.
-			static const bool s_timePresent = (getenv("SPRING_TIME_PRESENT") != nullptr);
-#endif
-			const int rdW = g_pbufW;
-			const int rdH = g_pbufH;
-
-			// Native read format of the default framebuffer: reading in this
-			// exact component order keeps Mesa on the GPU-pack PBO path
-			// (see EnsureGpuPackRing). The Metal side interprets the IOSurface
-			// bytes in the same order, so colors are bit-identical either way.
-			static const GLenum s_readFormat = []() -> GLenum {
-				GLint fmt = 0, typ = 0;
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-				glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &fmt);
-				glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE,   &typ);
-				const bool byteRGBA = (fmt == GL_RGBA && typ == GL_UNSIGNED_BYTE);
-				fprintf(stderr, "[spring-mac/present] impl color read fmt=0x%04x type=0x%04x -> reading %s\n",
-				        (unsigned)fmt, (unsigned)typ, byteRGBA ? "GL_RGBA" : "GL_BGRA");
-				return byteRGBA ? GL_RGBA : GL_BGRA;
-			}();
-			MacMetalPresent_SetSourceRGBA(s_readFormat == GL_RGBA);
-			ThreadPool::SetMacWorkerQosHint(configHandler->GetInt("MacWorkerQos"));
-
-#ifdef SPRING_MAC_DIAGNOSTICS
-			const spring_time tEntry = s_timePresent ? spring_now() : spring_notime;
-#endif
-			// Pipelined readback depth.
-			// SPRING_MAC_PRESENT_LAG: 1..3 = frames of present latency,
-			// 0 = synchronous readback of the current frame (zero added
-			// latency, stalls until the GPU drains — debugging/latency tool).
-			static const int s_lagFrames = []() -> int {
-				if (const char* s = getenv("SPRING_MAC_PRESENT_LAG")) {
-					const int v = atoi(s);
-					if (v >= 0 && v <= 3) return v; // 3 needs the gpu-pack ring (PP_RING=4)
-				}
-				return 2;
-			}();
-
-			// GPU-pack PBO ring: the readback behind the IOSurface fallback.
-			// SPRING_MAC_PRESENT_GPUPACK=0 falls back to the staging-ring below.
-			static const bool s_gpuPack = []() {
-				const char* s = getenv("SPRING_MAC_PRESENT_GPUPACK");
-				return s == nullptr || atoi(s) != 0;
-			}();
-
-			// Direct pixel-buffer present: the Metal present shader reads the
-			// persistently-mapped pack ring straight from unified memory — no
-			// IOSurface staging, no per-frame CPU map + 44MB memcpy.
-			// SPRING_MAC_PRESENT_DIRECT overrides when set; otherwise the
-			// MacPresentDirect config is read EVERY frame so a probe widget
-			// can flip it mid-run (A/B legs share one seeked process). Any
-			// setup failure falls back to the IOSurface paths below.
-			static const int s_directEnv = []() {
-				const char* s = getenv("SPRING_MAC_PRESENT_DIRECT");
-				return (s != nullptr) ? (atoi(s) != 0 ? 1 : 0) : -1;
-			}();
-			const bool directWanted = (s_directEnv >= 0)
-				? (s_directEnv != 0)
-				: (configHandler->GetInt("MacPresentDirect") != 0);
-
-			bool directDone = false;
-			if (!wantLegacy && directWanted && s_lagFrames > 0) {
-				directDone = DirectPresentFrame(rdW, rdH, s_readFormat, s_lagFrames);
-				static bool s_loggedFallback = false;
-				if (!directDone && !s_loggedFallback) {
-					fprintf(stderr, "[spring-mac/present] direct pixel-buffer path unavailable — using IOSurface fallback\n");
-					s_loggedFallback = true;
-				}
-			}
-
-#ifdef SPRING_MAC_DIAGNOSTICS
-			if (directDone && s_timePresent) {
-				static int    s_dpCnt = 0;
-				static double s_dpMs  = 0.0;
-				s_dpMs += (spring_now() - tEntry).toMilliSecsf();
-				if (++s_dpCnt >= 60) {
-					fprintf(stderr, "[spring-mac/present-direct] avg over %d frames: pack+present-submit %.2fms\n",
-					        s_dpCnt, s_dpMs / s_dpCnt);
-					s_dpCnt = 0; s_dpMs = 0.0;
-				}
-			}
-#endif
-
-			size_t ioRowBytes = 0;
-			void*  ioBase     = (wantLegacy || directDone) ? nullptr
-			                               : MacMetalPresent_AcquireIOSurfaceBuffer(rdW, rdH, &ioRowBytes);
-#ifdef SPRING_MAC_DIAGNOSTICS
-			const spring_time tAfterAcquire = s_timePresent ? spring_now() : spring_notime;
-#endif
-
-			if (directDone) {
-				// presented above; nothing further to do this frame
-			} else if (ioBase != nullptr && s_gpuPack && s_lagFrames > 0 && EnsureGpuPackRing(rdW, rdH)) {
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-
-				// queue this frame's GPU pack into the ring (CPU-non-blocking)
-				const int cur = (int)(g_ppFrame % PP_RING);
-				glBindBuffer(GL_PIXEL_PACK_BUFFER, g_ppPBO[cur]);
-				glReadPixels(0, 0, rdW, rdH, s_readFormat, GL_UNSIGNED_BYTE, nullptr);
-				glFlush(); // submit the pack now; otherwise it rides the NEXT frame's flush (+1 frame of map wait)
-#ifdef SPRING_MAC_DIAGNOSTICS
-				const spring_time tAfterRead = s_timePresent ? spring_now() : spring_notime;
-#endif
-
-				// map the lag-frames-old slot (idle linear buffer: instant map,
-				// no GPU round-trip) and copy into the IOSurface
-				if (g_ppFrame >= s_lagFrames) {
-					const int old = (int)((g_ppFrame - s_lagFrames) % PP_RING);
-					glBindBuffer(GL_PIXEL_PACK_BUFFER, g_ppPBO[old]);
-					const GLsizeiptr nBytes = (GLsizeiptr)rdW * (GLsizeiptr)rdH * 4;
-					if (void* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, nBytes, GL_MAP_READ_BIT)) {
-						const size_t srcRowBytes = (size_t)rdW * 4;
-						if (ioRowBytes == srcRowBytes) {
-							std::memcpy(ioBase, mapped, srcRowBytes * (size_t)rdH);
-						} else {
-							const uint8_t* srcp = static_cast<const uint8_t*>(mapped);
-							uint8_t*       dstp = static_cast<uint8_t*>(ioBase);
-							for (int yy = 0; yy < rdH; ++yy)
-								std::memcpy(dstp + (size_t)yy * ioRowBytes,
-								            srcp + (size_t)yy * srcRowBytes, srcRowBytes);
-						}
-						glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-					}
-				}
-				glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-				g_ppFrame++;
-
-#ifdef SPRING_MAC_DIAGNOSTICS
-				const spring_time tAfterMap = s_timePresent ? spring_now() : spring_notime;
-#endif
-				MacMetalPresent_PresentIOSurface(true);
-#ifdef SPRING_MAC_DIAGNOSTICS
-				if (s_timePresent) {
-					const spring_time tAfterPresent = spring_now();
-					static int    s_gpCnt = 0;
-					static double s_gpAcqMs = 0.0, s_gpReadMs = 0.0, s_gpMapMs = 0.0, s_gpPresMs = 0.0;
-					s_gpAcqMs  += (tAfterAcquire - tEntry).toMilliSecsf();
-					s_gpReadMs += (tAfterRead    - tAfterAcquire).toMilliSecsf();
-					s_gpMapMs  += (tAfterMap     - tAfterRead).toMilliSecsf();
-					s_gpPresMs += (tAfterPresent - tAfterMap).toMilliSecsf();
-					if (++s_gpCnt >= 60) {
-						fprintf(stderr,
-						    "[spring-mac/present-gpupack] avg over %d frames: acquire %.2fms | read %.2fms | map+copy %.2fms | metal-submit %.2fms\n",
-						    s_gpCnt, s_gpAcqMs / s_gpCnt, s_gpReadMs / s_gpCnt, s_gpMapMs / s_gpCnt, s_gpPresMs / s_gpCnt);
-						s_gpCnt = 0; s_gpAcqMs = s_gpReadMs = s_gpMapMs = s_gpPresMs = 0.0;
-					}
-				}
-#endif
-			} else if (ioBase != nullptr && s_lagFrames > 0 && EnsureStagingRing(rdW, rdH)) {
-				const int cur = (int)(g_rbFrame % RB_RING);
-				// queue this frame's blit into the ring
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_rbFBO[cur]);
-				glBlitFramebuffer(0, 0, g_pbufW, g_pbufH,
-				                  0, 0, rdW,     rdH,
-				                  GL_COLOR_BUFFER_BIT, GL_NEAREST);
-				glFlush(); // submit the batch so the blit executes during this frame
-
-				if (g_rbFrame >= s_lagFrames) {
-					// read back the `lag`-frames-old slot — its GPU work is done,
-					// so the driver's synchronous-map fallback returns immediately
-					const int old = (int)((g_rbFrame - s_lagFrames) % RB_RING);
-					glBindFramebuffer(GL_READ_FRAMEBUFFER, g_rbFBO[old]);
-					const int rowPixels = static_cast<int>(ioRowBytes / 4);
-					if (rowPixels != rdW)
-						glPixelStorei(GL_PACK_ROW_LENGTH, rowPixels);
-					glReadPixels(0, 0, rdW, rdH, GL_BGRA, GL_UNSIGNED_BYTE, ioBase);
-					if (rowPixels != rdW)
-						glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-				}
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-				glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-				g_rbFrame++;
-
-#ifdef SPRING_MAC_DIAGNOSTICS
-				const spring_time tAfterRingRead = s_timePresent ? spring_now() : spring_notime;
-#endif
-				MacMetalPresent_PresentIOSurface(true);
-#ifdef SPRING_MAC_DIAGNOSTICS
-				if (s_timePresent) {
-					const spring_time tAfterRingPresent = spring_now();
-					static int    s_ringCnt = 0;
-					static double s_ringAcqMs = 0.0, s_ringReadMs = 0.0, s_ringPresMs = 0.0;
-					s_ringAcqMs  += (tAfterAcquire   - tEntry).toMilliSecsf();
-					s_ringReadMs += (tAfterRingRead  - tAfterAcquire).toMilliSecsf();
-					s_ringPresMs += (tAfterRingPresent - tAfterRingRead).toMilliSecsf();
-					if (++s_ringCnt >= 60) {
-						fprintf(stderr,
-						    "[spring-mac/present-ring] avg over %d frames: acquire %.2fms | blit+read %.2fms | metal-submit %.2fms\n",
-						    s_ringCnt, s_ringAcqMs / s_ringCnt, s_ringReadMs / s_ringCnt, s_ringPresMs / s_ringCnt);
-						s_ringCnt = 0; s_ringAcqMs = s_ringReadMs = s_ringPresMs = 0.0;
-					}
-				}
-#endif
-			} else if (ioBase != nullptr) {
-				// SPRING_MAC_PRESENT_LAG=0: synchronous readback of the current
-				// frame straight into the IOSurface. Zero added present latency,
-				// but glReadPixels stalls until the GPU pipeline drains — kept as
-				// the minimal-latency/debugging path.
-				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-				const int rowPixels = static_cast<int>(ioRowBytes / 4);
-				if (rowPixels != rdW)
-					glPixelStorei(GL_PACK_ROW_LENGTH, rowPixels);
-				glReadPixels(0, 0, rdW, rdH, GL_BGRA, GL_UNSIGNED_BYTE, ioBase);
-				if (rowPixels != rdW)
-					glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-
-#ifdef SPRING_MAC_DIAGNOSTICS
-				// Debug: dump rendered frames to raw files for inspection.
-				// SPRING_MAC_DUMP_FRAME=<prefix>; writes <prefix>.NNN.raw
-				// (8-byte header: uint32 w,h; then row-major BGRA, bottom-up).
-				if (const char* dp = getenv("SPRING_MAC_DUMP_FRAME")) {
-					static int s_df = 0;
-					if (s_df < 80 && (s_df % 6) == 0) {
-						char path[1024];
-						snprintf(path, sizeof(path), "%s.%03d.raw", dp, s_df);
-						if (FILE* f = fopen(path, "wb")) {
-							const uint32_t hdr[2] = { (uint32_t)rdW, (uint32_t)rdH };
-							fwrite(hdr, sizeof(hdr), 1, f);
-							const uint8_t* row = static_cast<const uint8_t*>(ioBase);
-							for (int y = 0; y < rdH; ++y) {
-								fwrite(row + (size_t)y * ioRowBytes, 1, (size_t)rdW * 4, f);
-							}
-							fclose(f);
-						}
-					}
-					s_df++;
-				}
-#endif
-
-				MacMetalPresent_PresentIOSurface(true);
-			} else {
-				static bool s_loggedLegacy = false;
-				if (!s_loggedLegacy) {
-					fprintf(stderr, "[MetalPresent] LEGACY CPU-staging path active (%s)\n",
-					        wantLegacy ? "forced via SPRING_MAC_LEGACY_PRESENT" : "IOSurface acquire failed");
-					s_loggedLegacy = true;
-				}
-				// Legacy CPU-staging fallback.
-				const size_t need = static_cast<size_t>(g_pbufW) * g_pbufH * 4;
-				if (g_presentBuf.size() < need)
-					g_presentBuf.resize(need);
-				glReadPixels(0, 0, g_pbufW, g_pbufH, GL_BGRA, GL_UNSIGNED_BYTE, g_presentBuf.data());
-#ifdef SPRING_MAC_DIAGNOSTICS
-				if (const char* dp = getenv("SPRING_MAC_DUMP_FRAME")) {
-					static int s_df = 0;
-					if (s_df < 80 && (s_df % 6) == 0) {
-						char path[1024];
-						snprintf(path, sizeof(path), "%s.%03d.raw", dp, s_df);
-						if (FILE* f = fopen(path, "wb")) {
-							const uint32_t hdr[2] = { (uint32_t)g_pbufW, (uint32_t)g_pbufH };
-							fwrite(hdr, sizeof(hdr), 1, f);
-							fwrite(g_presentBuf.data(), 1, need, f);
-							fclose(f);
-						}
-					}
-					s_df++;
-				}
-#endif
-				MacMetalPresent_PresentBGRA(g_pbufW, g_pbufH, g_presentBuf.data(), true);
-			}
-			// We replaced SDL_GL_SwapWindow (which serviced the Cocoa run loop),
-			// so pump events here to let CoreAnimation actually composite the
-			// presented drawable — including during the single-threaded load.
-			SDL_PumpEvents();
-		} else
+		// no swapchain on the GL side (surfaceless pbuffer): present the frame
+		// manually onto the CAMetalLayer; false = EGL not up, use the SDL swap
+		if (!MacPresent::PresentFrame())
 #endif
 		SDL_GL_SwapWindow(sdlWindow);
 
@@ -2675,7 +1705,7 @@ void CGlobalRendering::ReadWindowPosAndSize()
 		// window's current pixel size, so winSize below binds to the NEW size
 		// and the engine renders at the new resolution (rather than scaling a
 		// fixed startup buffer). No-op if unchanged or pre-EGL-init.
-		ResizeEGLSurfaceIfNeeded(sdlWindow);
+		MacPresent::ResizeIfNeeded(sdlWindow);
 
 		// Engine contract: winSize/viewSize must match the pbuffer FBO the
 		// engine actually renders into — *not* the CAMetalLayer drawableSize.
@@ -2688,14 +1718,15 @@ void CGlobalRendering::ReadWindowPosAndSize()
 		// the FBO and the rest of the UI is clipped. Bind to the FBO size
 		// instead.
 		const int sdlW_saved = winSizeX, sdlH_saved = winSizeY;
-		if (g_pbufW > 1 && g_pbufH > 1) {
-			winSizeX = g_pbufW;
-			winSizeY = g_pbufH;
+		int pbufW = 0, pbufH = 0;
+		MacPresent::GetDrawableSize(pbufW, pbufH);
+		if (pbufW > 1 && pbufH > 1) {
+			winSizeX = pbufW;
+			winSizeY = pbufH;
 		} else {
-			// Pre-EGL-init fallback: mirror InitEGLContext's pbuffer sizing
+			// Pre-EGL-init fallback: mirror CreateContext's pbuffer sizing
 			// so loading UI starts at the right resolution.
-			const bool   noRetina = (getenv("SPRING_MAC_NO_RETINA") != nullptr);
-			const double scale    = noRetina ? 1.0 : GetBackingScaleFactor(sdlWindow);
+			const double scale = MacPresent::EffectiveBackingScale(sdlWindow);
 			winSizeX = std::max(1, int(std::lround(double(sdlW_saved) * scale)));
 			winSizeY = std::max(1, int(std::lround(double(sdlH_saved) * scale)));
 		}

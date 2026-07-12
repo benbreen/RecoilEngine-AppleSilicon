@@ -94,12 +94,6 @@ namespace ThreadPool {
 	void AddExtJob(std::future<void>&& f);
 	void ClearExtJobs();
 
-#if defined(__APPLE__)
-	// runtime QoS hint for sync-pool workers (see WorkerLoop): 1 = prefer the
-	// performance cluster (USER_INITIATED), 0 = scheduler default
-	void SetMacWorkerQosHint(int v);
-#endif
-
 	void PushTaskGroup(ITaskGroup* taskGroup);
 	void PushTaskGroup(std::shared_ptr<ITaskGroup>&& taskGroup);
 	void WaitForFinished(std::shared_ptr<ITaskGroup>&& taskGroup);

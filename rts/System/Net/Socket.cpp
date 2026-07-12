@@ -38,7 +38,9 @@ bool CheckErrorCode(asio::error_code& err, const asio::ip::udp::endpoint& dest)
 	// the Local Network permission, every UDP send to a LAN address fails
 	// with EHOSTUNREACH — which looks exactly like a routing problem and
 	// times out with a generic message. Explain it once, actionably.
-	// (Internet servers are unaffected; only RFC1918/link-local targets.)
+	// (Internet servers are unaffected; only RFC1918/link-local targets.
+	// IPv4 only by design: BAR LAN games are hosted on v4 addresses; a v6
+	// link-local/ULA target still gets the generic network error below.)
 	if (err && err.value() == EHOSTUNREACH && dest.address().is_v4()) {
 		const uint32_t a = dest.address().to_v4().to_uint();
 		const bool priv = ((a >> 24) == 10) ||                    // 10/8
