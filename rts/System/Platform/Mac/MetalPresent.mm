@@ -45,6 +45,15 @@ static id<MTLRenderPipelineState> g_presentPSO      = nil;
 static id<MTLRenderPipelineState> g_presentPSO_flip = nil;
 static id<MTLSamplerState>        g_linearSampler   = nil;
 
+// Path 3: direct pixel-buffer present. MTLBuffer wraps of the engine's
+// persistently-mapped PBO ring, cached by base address (newBufferWithBytesNoCopy
+// is not free — wrap once, reuse every frame).
+#define PB_WRAP_MAX 8
+static struct { void* base; size_t len; id<MTLBuffer> buf; } g_pbWraps[PB_WRAP_MAX];
+static int                        g_pbWrapCount     = 0;
+static id<MTLRenderPipelineState> g_pbPSO           = nil; // non-flipped
+static id<MTLRenderPipelineState> g_pbPSO_flip      = nil;
+
 // Fullscreen-triangle vertex+fragment shader. Two PSOs (flipped + non-flipped)
 // keep the per-frame Y-flip choice branch-free in the GPU shader.
 static NSString* const kPresentShaderSrc = @R"(
@@ -80,6 +89,27 @@ fragment float4 fs_present(VOut in [[stage_in]],
                            texture2d<float> src [[texture(0)]],
                            sampler           s   [[sampler(0)]]) {
     return src.sample(s, in.uv);
+}
+
+// Direct pixel-buffer variant: reads the packed frame straight from the
+// engine's persistently-mapped PIXEL_PACK buffer (unified memory) — the
+// buffer analog of a nearest-neighbor sample. uv carries the same flip
+// semantics as the texture path (vs_present / vs_present_flip).
+struct BufSrc {
+    uint w;
+    uint h;
+    uint rgba; // 1 = bytes are R,G,B,A; 0 = B,G,R,A
+};
+
+fragment float4 fs_present_buf(VOut in [[stage_in]],
+                               device const uchar4* px  [[buffer(0)]],
+                               constant BufSrc&     src [[buffer(1)]]) {
+    const float2 uvc = clamp(in.uv, 0.0, 1.0);
+    const uint x = min(uint(uvc.x * float(src.w)), src.w - 1u);
+    const uint y = min(uint(uvc.y * float(src.h)), src.h - 1u);
+    const uchar4 c = px[y * src.w + x];
+    const float4 f = float4(c) * (1.0 / 255.0);
+    return (src.rgba != 0u) ? float4(f.rgb, f.a) : float4(f.b, f.g, f.r, f.a);
 }
 )";
 
@@ -119,6 +149,25 @@ static bool BuildPresentPipelines()
 
     g_presentPSO      = makePSO(vs);
     g_presentPSO_flip = makePSO(vsFlip);
+
+    id<MTLFunction> fsBuf = [lib newFunctionWithName:@"fs_present_buf"];
+    if (fsBuf != nil) {
+        auto makeBufPSO = [&](id<MTLFunction> vertFn) -> id<MTLRenderPipelineState> {
+            MTLRenderPipelineDescriptor* d = [[MTLRenderPipelineDescriptor alloc] init];
+            d.vertexFunction   = vertFn;
+            d.fragmentFunction = fsBuf;
+            d.colorAttachments[0].pixelFormat = g_layer.pixelFormat;
+            d.colorAttachments[0].blendingEnabled = NO;
+            NSError* e = nil;
+            id<MTLRenderPipelineState> p = [g_device newRenderPipelineStateWithDescriptor:d error:&e];
+            if (p == nil)
+                fprintf(stderr, "[MetalPresent] buffer-present PSO build failed: %s\n",
+                        e ? [[e localizedDescription] UTF8String] : "(no error)");
+            return p;
+        };
+        g_pbPSO      = makeBufPSO(vs);
+        g_pbPSO_flip = makeBufPSO(vsFlip);
+    }
 
     MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
     sd.minFilter = MTLSamplerMinMagFilterNearest;
@@ -394,4 +443,137 @@ void MacMetalPresent_PresentIOSurface(bool flipY)
     });
 
     g_ioCur = (g_ioCur + 1) % IO_SLOTS;
+}
+
+// ---- Path 3: direct pixel-buffer present -----------------------------------
+
+static void EnsurePresentQueue()
+{
+    if (g_presentQueue == nil) {
+        g_presentQueue  = dispatch_queue_create("spring.mac.present", DISPATCH_QUEUE_SERIAL);
+        g_presentBudget = dispatch_semaphore_create(2);
+    }
+}
+
+// drawableSize must track the layer's natural backing pixel count (see the
+// comment in EnsureIOSurfaceBacking — the direct path never creates an
+// IOSurface, so it maintains the drawable size itself).
+static void EnsureLayerDrawableSize(int w, int h)
+{
+    static int s_lastW = -1, s_lastH = -1;
+    if (w == s_lastW && h == s_lastH)
+        return;
+    const CGSize  lbSize  = g_layer.bounds.size;
+    const CGFloat cs      = g_layer.contentsScale > 0 ? g_layer.contentsScale : 1.0;
+    const CGFloat targetW = lbSize.width  * cs;
+    const CGFloat targetH = lbSize.height * cs;
+    g_layer.drawableSize = CGSizeMake(targetW > 0 ? targetW : (CGFloat)w,
+                                      targetH > 0 ? targetH : (CGFloat)h);
+    s_lastW = w;
+    s_lastH = h;
+}
+
+static id<MTLBuffer> WrapPixelBuffer(void* base, size_t len)
+{
+    for (int i = 0; i < g_pbWrapCount; ++i) {
+        if (g_pbWraps[i].base == base && g_pbWraps[i].len == len)
+            return g_pbWraps[i].buf;
+    }
+    if (g_pbWrapCount >= PB_WRAP_MAX) {
+        fprintf(stderr, "[MetalPresent] pixel-buffer wrap cache full (%d) — caller leaking rings?\n", PB_WRAP_MAX);
+        return nil;
+    }
+    id<MTLBuffer> buf = [g_device newBufferWithBytesNoCopy:base
+                                                    length:len
+                                                   options:MTLResourceStorageModeShared
+                                               deallocator:nil]; // owned (+1), released in Invalidate
+    if (buf == nil) {
+        fprintf(stderr, "[MetalPresent] newBufferWithBytesNoCopy rejected ptr=%p len=%zu (page-aligned?)\n", base, len);
+        return nil;
+    }
+    g_pbWraps[g_pbWrapCount++] = { base, len, buf };
+    return buf;
+}
+
+bool MacMetalPresent_PresentPixelBuffer(void* base, size_t len, int w, int h,
+                                        bool srcRGBA, bool flipY)
+{
+    if (g_device == nil || g_queue == nil || g_layer == nil)
+        return false;
+    if (base == nullptr || w <= 0 || h <= 0 || len < (size_t)w * h * 4)
+        return false;
+    if (!BuildPresentPipelines() || g_pbPSO == nil || g_pbPSO_flip == nil)
+        return false;
+
+    id<MTLBuffer> buf = WrapPixelBuffer(base, len);
+    if (buf == nil)
+        return false;
+
+    EnsurePresentQueue();
+    EnsureLayerDrawableSize(w, h);
+
+    static bool s_loggedOnce = false;
+    if (!s_loggedOnce) {
+        fprintf(stderr, "[MetalPresent] DIRECT pixel-buffer present active (%dx%d, %s, no CPU copy)\n",
+                w, h, srcRGBA ? "RGBA" : "BGRA");
+        s_loggedOnce = true;
+    }
+
+    // same budget-2 drop policy as the IOSurface path (see PresentIOSurface)
+    if (dispatch_semaphore_wait(g_presentBudget, DISPATCH_TIME_NOW) != 0) {
+        g_presentSkips++;
+        if ((g_presentSkips & (g_presentSkips - 1)) == 0)
+            fprintf(stderr, "[MetalPresent] dropped present (compositor 2 behind) x%llu\n",
+                    (unsigned long long)g_presentSkips);
+        return true; // frame dropped by policy, not a path failure
+    }
+
+    struct { uint32_t w, h, rgba; } bufSrc = { (uint32_t)w, (uint32_t)h, srcRGBA ? 1u : 0u };
+    id<MTLRenderPipelineState> pso = flipY ? g_pbPSO_flip : g_pbPSO;
+    dispatch_async(g_presentQueue, ^{
+        id<CAMetalDrawable> drawable = [g_layer nextDrawable];
+        if (drawable == nil) {
+            fprintf(stderr, "[MetalPresent] nextDrawable returned nil — frame not presented\n");
+            dispatch_semaphore_signal(g_presentBudget);
+            return;
+        }
+        MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+        rpd.colorAttachments[0].texture     = drawable.texture;
+        rpd.colorAttachments[0].loadAction  = MTLLoadActionDontCare;
+        rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
+        [enc setRenderPipelineState:pso];
+        [enc setFragmentBuffer:buf offset:0 atIndex:0];
+        [enc setFragmentBytes:&bufSrc length:sizeof(bufSrc) atIndex:1];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [enc endEncoding];
+        [cb presentDrawable:drawable];
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull c) {
+            dispatch_semaphore_signal(g_presentBudget);
+        }];
+        [cb commit];
+    });
+    return true;
+}
+
+void MacMetalPresent_InvalidatePixelBuffers(void)
+{
+    if (g_pbWrapCount == 0)
+        return;
+    // Drain: flush the serial queue (all queued presents committed), then
+    // reclaim both budget slots so no command buffer still references a wrap.
+    if (g_presentQueue != nil) {
+        dispatch_sync(g_presentQueue, ^{});
+        for (int i = 0; i < 2; ++i)
+            dispatch_semaphore_wait(g_presentBudget, dispatch_time(DISPATCH_TIME_NOW, 2ull * NSEC_PER_SEC));
+        for (int i = 0; i < 2; ++i)
+            dispatch_semaphore_signal(g_presentBudget);
+    }
+    for (int i = 0; i < g_pbWrapCount; ++i) {
+        [g_pbWraps[i].buf release];
+        g_pbWraps[i] = { nullptr, 0, nil };
+    }
+    g_pbWrapCount = 0;
 }

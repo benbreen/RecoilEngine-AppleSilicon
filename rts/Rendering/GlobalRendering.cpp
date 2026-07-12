@@ -408,6 +408,10 @@ CONFIG(bool, DebugGL).defaultValue(false).description("Enables GL debug-context 
 CONFIG(bool, DebugGLStacktraces).defaultValue(false).description("Create a stacktrace when an OpenGL error occurs");
 CONFIG(bool, DebugGLReportGroups).defaultValue(false).description("Show OpenGL PUSH/POP groups in the GL debug");
 
+#if defined(__APPLE__) && !defined(HEADLESS)
+CONFIG(int, MacPresentDirect).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: present shader reads the readback ring directly from unified memory (0 = IOSurface staging path). Runtime-changeable so perf A/B legs can share one seeked process.");
+#endif
+
 CONFIG(int, GLContextMajorVersion).defaultValue(3).minimumValue(3).maximumValue(4);
 CONFIG(int, GLContextMinorVersion).defaultValue(0).minimumValue(0).maximumValue(5);
 CONFIG(int, MSAALevel).defaultValue(0).minimumValue(0).maximumValue(32).description("Enables multisample anti-aliasing; 'level' is the number of samples used.");
@@ -1110,6 +1114,7 @@ void CGlobalRendering::PostInit() {
 }
 
 #if defined(__APPLE__) && !defined(HEADLESS)
+#include <unistd.h> // getpagesize (direct-present ring alignment)
 // Staging-texture ring for PIPELINED readback (fallback when the GPU-pack
 // ring is disabled; see SwapBuffers).
 //
@@ -1204,6 +1209,185 @@ static bool EnsureStagingRing(int w, int h)
 		fprintf(stderr, "[spring-mac/ring] pipelined staging-ring readback active (%dx%d)\n", w, h);
 		s_logged = true;
 	}
+	return true;
+}
+
+// Direct-present PBO ring (the zero-copy default; see SwapBuffers).
+// Same GPU-pack readback as the PP ring, but the slots are PERSISTENTLY
+// mapped (ARB_buffer_storage) and page-aligned, so the Metal present shader
+// reads the packed pixels straight from unified memory
+// (MacMetalPresent_PresentPixelBuffer): the per-frame CPU map + 44MB memcpy
+// into the IOSurface disappears from the main thread.
+//
+// Ring depth: the presented slot must not be re-packed while a present that
+// reads it is still in flight. Presents pipeline at most 2 deep (budget
+// semaphore in MetalPresent.mm); at lag L a slot is re-packed DP_RING - L
+// frames after its present was queued, so DP_RING = 6 leaves >= 1 frame of
+// margin at the maximum lag of 3. Packing into a persistently-mapped buffer
+// is legal GL (unlike a plain mapped one — the bug class behind the reverted
+// async-copy experiment).
+static constexpr int DP_RING = 6;
+static unsigned int g_dpPBO[DP_RING]   = { 0 };
+static void*        g_dpMap[DP_RING]   = { nullptr };
+static GLsync       g_dpFence[DP_RING] = { nullptr };
+static size_t g_dpAllocBytes = 0;
+static int    g_dpW = 0, g_dpH = 0;
+static long   g_dpFrame = 0;
+static bool   g_dpFailed = false;
+
+static void ReleaseDirectRing()
+{
+	if (g_dpPBO[0] == 0)
+		return;
+	// Metal must drop its wraps of the mapped pointers before we unmap.
+	MacMetalPresent_InvalidatePixelBuffers();
+	for (int i = 0; i < DP_RING; ++i) {
+		if (g_dpFence[i] != nullptr) {
+			glDeleteSync(g_dpFence[i]);
+			g_dpFence[i] = nullptr;
+		}
+		if (g_dpMap[i] != nullptr) {
+			glBindBuffer(GL_PIXEL_PACK_BUFFER, g_dpPBO[i]);
+			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+			g_dpMap[i] = nullptr;
+		}
+	}
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	glDeleteBuffers(DP_RING, g_dpPBO);
+	std::fill(std::begin(g_dpPBO), std::end(g_dpPBO), 0);
+	g_dpW = g_dpH = 0;
+	g_dpFrame = 0;
+}
+
+static bool EnsureDirectRing(int w, int h)
+{
+	if (g_dpPBO[0] != 0 && g_dpW == w && g_dpH == h)
+		return true;
+	ReleaseDirectRing();
+
+	if (GLAD_GL_ARB_buffer_storage == 0 && !GLAD_GL_VERSION_4_4) {
+		fprintf(stderr, "[spring-mac/direct] no ARB_buffer_storage — direct present unavailable\n");
+		return false;
+	}
+
+	const size_t pageSz     = (size_t)getpagesize();
+	const size_t pixBytes   = (size_t)w * h * 4;
+	const size_t allocBytes = (pixBytes + pageSz - 1) & ~(pageSz - 1); // newBufferWithBytesNoCopy needs page-multiple length
+
+	glGetError(); // clear
+	glGenBuffers(DP_RING, g_dpPBO);
+	for (int i = 0; i < DP_RING; ++i) {
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, g_dpPBO[i]);
+		glBufferStorage(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)allocBytes, nullptr,
+		                GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+		const GLenum se = glGetError();
+		if (se != GL_NO_ERROR) {
+			fprintf(stderr, "[spring-mac/direct] glBufferStorage failed (slot %d, err 0x%04x)\n", i, se);
+			glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+			ReleaseDirectRing();
+			return false;
+		}
+		g_dpMap[i] = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr)allocBytes,
+		                              GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+		if (g_dpMap[i] == nullptr || ((uintptr_t)g_dpMap[i] & (pageSz - 1)) != 0) {
+			// unaligned pointers cannot be wrapped by Metal — bail to fallback
+			fprintf(stderr, "[spring-mac/direct] persistent map %s (slot %d, ptr %p)\n",
+			        g_dpMap[i] == nullptr ? "failed" : "not page-aligned", i, g_dpMap[i]);
+			glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+			ReleaseDirectRing();
+			return false;
+		}
+	}
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	g_dpAllocBytes = allocBytes;
+	g_dpW = w;
+	g_dpH = h;
+	g_dpFrame = 0;
+
+	static bool s_logged = false;
+	if (!s_logged) {
+		fprintf(stderr, "[spring-mac/direct] persistent PBO ring for direct present (%dx%d, %d slots x %zu bytes)\n",
+		        w, h, DP_RING, allocBytes);
+		s_logged = true;
+	}
+	return true;
+}
+
+// Pack this frame into the ring and hand the lag-frames-old slot to the Metal
+// present. Returns false (and latches g_dpFailed) if the path is unavailable —
+// the caller then runs the IOSurface fallback from this frame on.
+static bool DirectPresentFrame(int rdW, int rdH, GLenum readFormat, int lagFrames)
+{
+	if (g_dpFailed)
+		return false;
+	if (!EnsureDirectRing(rdW, rdH)) {
+		g_dpFailed = true;
+		return false;
+	}
+
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	const int cur = (int)(g_dpFrame % DP_RING);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, g_dpPBO[cur]);
+	glReadPixels(0, 0, rdW, rdH, readFormat, GL_UNSIGNED_BYTE, nullptr);
+	// a silently-failing pack presents stale frames (the async-copy flicker
+	// class); packing into a PERSISTENT map is legal, but verify early on
+	if (g_dpFrame < 100) {
+		const GLenum pe = glGetError();
+		if (pe != GL_NO_ERROR) {
+			fprintf(stderr, "[spring-mac/direct] pack into persistent PBO failed (err 0x%04x) — disabling direct present\n", pe);
+			glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+			g_dpFailed = true;
+			return false;
+		}
+	}
+	if (g_dpFence[cur] != nullptr)
+		glDeleteSync(g_dpFence[cur]);
+	g_dpFence[cur] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+	glFlush(); // submit the pack now; otherwise it rides the NEXT frame's flush
+
+	bool presented = true;
+	if (g_dpFrame >= lagFrames) {
+		// Metal must not read pages the pack compute is still writing. The
+		// CPU map used to guarantee this implicitly by blocking until the
+		// pack completed — and that block doubled as PIPELINE BACKPRESSURE:
+		// removing it entirely (tried: present newest-completed slot, skip
+		// when none) let the main thread run ahead until the GPU sat 5+
+		// frames deep and most presents were SKIPPED — high "rendered" fps,
+		// stale glass. Smoothness is the product, so the wait stays; the
+		// copy removal is still a win everywhere the GPU keeps up.
+		int old = (int)((g_dpFrame - lagFrames) % DP_RING);
+		if (g_dpFence[old] != nullptr &&
+		    glClientWaitSync(g_dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 0) == GL_TIMEOUT_EXPIRED) {
+			static uint64_t s_fenceWaits = 0;
+			++s_fenceWaits;
+			if ((s_fenceWaits & (s_fenceWaits - 1)) == 0) // log 1,2,4,8,...
+				fprintf(stderr, "[spring-mac/direct] lag-%d pack fence not signaled — waiting (GPU behind, x%llu)\n",
+				        lagFrames, (unsigned long long)s_fenceWaits);
+			if (glClientWaitSync(g_dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull) == GL_TIMEOUT_EXPIRED) {
+				// pathological (>100ms): use the newest COMPLETED older slot
+				// instead of reading a buffer mid-write; skip if none
+				old = -1;
+				for (int k = lagFrames + 1; k <= (int)std::min<long>(g_dpFrame, DP_RING - 2); ++k) {
+					const int cand = (int)((g_dpFrame - k) % DP_RING);
+					if (g_dpFence[cand] == nullptr ||
+					    glClientWaitSync(g_dpFence[cand], GL_SYNC_FLUSH_COMMANDS_BIT, 0) != GL_TIMEOUT_EXPIRED) {
+						old = cand;
+						break;
+					}
+				}
+			}
+		}
+		if (old >= 0)
+			presented = MacMetalPresent_PresentPixelBuffer(g_dpMap[old], g_dpAllocBytes, rdW, rdH,
+			                                               readFormat == GL_RGBA, true);
+	}
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+	if (!presented) {
+		g_dpFailed = true;
+		return false;
+	}
+	g_dpFrame++;
 	return true;
 }
 #endif
@@ -1313,13 +1497,6 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 #ifdef SPRING_MAC_DIAGNOSTICS
 			const spring_time tEntry = s_timePresent ? spring_now() : spring_notime;
 #endif
-			size_t ioRowBytes = 0;
-			void*  ioBase     = wantLegacy ? nullptr
-			                               : MacMetalPresent_AcquireIOSurfaceBuffer(rdW, rdH, &ioRowBytes);
-#ifdef SPRING_MAC_DIAGNOSTICS
-			const spring_time tAfterAcquire = s_timePresent ? spring_now() : spring_notime;
-#endif
-
 			// Pipelined readback depth.
 			// SPRING_MAC_PRESENT_LAG: 1..3 = frames of present latency,
 			// 0 = synchronous readback of the current frame (zero added
@@ -1332,14 +1509,61 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 				return 2;
 			}();
 
-			// GPU-pack PBO ring: the default present readback.
+			// GPU-pack PBO ring: the readback behind the IOSurface fallback.
 			// SPRING_MAC_PRESENT_GPUPACK=0 falls back to the staging-ring below.
 			static const bool s_gpuPack = []() {
 				const char* s = getenv("SPRING_MAC_PRESENT_GPUPACK");
 				return s == nullptr || atoi(s) != 0;
 			}();
 
-			if (ioBase != nullptr && s_gpuPack && s_lagFrames > 0 && EnsureGpuPackRing(rdW, rdH)) {
+			// Direct pixel-buffer present: the Metal present shader reads the
+			// persistently-mapped pack ring straight from unified memory — no
+			// IOSurface staging, no per-frame CPU map + 44MB memcpy.
+			// SPRING_MAC_PRESENT_DIRECT overrides when set; otherwise the
+			// MacPresentDirect config is read EVERY frame so a probe widget
+			// can flip it mid-run (A/B legs share one seeked process). Any
+			// setup failure falls back to the IOSurface paths below.
+			static const int s_directEnv = []() {
+				const char* s = getenv("SPRING_MAC_PRESENT_DIRECT");
+				return (s != nullptr) ? (atoi(s) != 0 ? 1 : 0) : -1;
+			}();
+			const bool directWanted = (s_directEnv >= 0)
+				? (s_directEnv != 0)
+				: (configHandler->GetInt("MacPresentDirect") != 0);
+
+			bool directDone = false;
+			if (!wantLegacy && directWanted && s_lagFrames > 0) {
+				directDone = DirectPresentFrame(rdW, rdH, s_readFormat, s_lagFrames);
+				static bool s_loggedFallback = false;
+				if (!directDone && !s_loggedFallback) {
+					fprintf(stderr, "[spring-mac/present] direct pixel-buffer path unavailable — using IOSurface fallback\n");
+					s_loggedFallback = true;
+				}
+			}
+
+#ifdef SPRING_MAC_DIAGNOSTICS
+			if (directDone && s_timePresent) {
+				static int    s_dpCnt = 0;
+				static double s_dpMs  = 0.0;
+				s_dpMs += (spring_now() - tEntry).toMilliSecsf();
+				if (++s_dpCnt >= 60) {
+					fprintf(stderr, "[spring-mac/present-direct] avg over %d frames: pack+present-submit %.2fms\n",
+					        s_dpCnt, s_dpMs / s_dpCnt);
+					s_dpCnt = 0; s_dpMs = 0.0;
+				}
+			}
+#endif
+
+			size_t ioRowBytes = 0;
+			void*  ioBase     = (wantLegacy || directDone) ? nullptr
+			                               : MacMetalPresent_AcquireIOSurfaceBuffer(rdW, rdH, &ioRowBytes);
+#ifdef SPRING_MAC_DIAGNOSTICS
+			const spring_time tAfterAcquire = s_timePresent ? spring_now() : spring_notime;
+#endif
+
+			if (directDone) {
+				// presented above; nothing further to do this frame
+			} else if (ioBase != nullptr && s_gpuPack && s_lagFrames > 0 && EnsureGpuPackRing(rdW, rdH)) {
 				glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 
 				// queue this frame's GPU pack into the ring (CPU-non-blocking)

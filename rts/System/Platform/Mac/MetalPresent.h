@@ -45,6 +45,24 @@ void MacMetalPresent_PresentBGRA(int w, int h, const void* pixels, bool flipY);
 void* MacMetalPresent_AcquireIOSurfaceBuffer(int w, int h, size_t* outRowBytes);
 void  MacMetalPresent_PresentIOSurface(bool flipY);
 
+// Direct pixel-buffer present path (zero CPU copies).
+//
+// `base` is a PAGE-ALIGNED, persistently-mapped GL PIXEL_PACK buffer holding
+// the frame as tightly-packed w*h*4 bytes (bottom-up when flipY). The pointer
+// is wrapped once in an MTLBuffer via newBufferWithBytesNoCopy (cached by
+// address); the present shader reads the pixels straight from unified memory,
+// so the per-frame CPU map+memcpy into the IOSurface disappears. The caller
+// guarantees `base` stays mapped and its GPU pack is complete until the
+// present completes (ring depth >= present pipelining, enforced engine-side).
+// srcRGBA: byte order of the packed pixels. Returns false if the wrap or
+// pipeline setup failed (caller should fall back to the IOSurface path).
+bool MacMetalPresent_PresentPixelBuffer(void* base, size_t len, int w, int h,
+                                        bool srcRGBA, bool flipY);
+
+// Drop all cached MTLBuffer wraps after draining in-flight presents. MUST be
+// called before the caller unmaps/deletes the underlying PBOs (resize).
+void MacMetalPresent_InvalidatePixelBuffers(void);
+
 #ifdef __cplusplus
 }
 #endif
