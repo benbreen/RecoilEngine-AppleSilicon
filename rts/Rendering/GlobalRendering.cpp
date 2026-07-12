@@ -1310,7 +1310,9 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 		if (const char* cp = getenv("SPRING_FRAME_CAPTURE")) {
 			if (g_eglDisplay != EGL_NO_DISPLAY && g_eglSurface != EGL_NO_SURFACE && g_pbufW > 0 && g_pbufH > 0) {
 				static int s_cap = 0;
-				if ((s_cap % 30) == 0 && s_cap < 1800) {
+				static const int s_capEvery = [](){ const char* e = getenv("SPRING_FRAME_CAPTURE_EVERY"); return e ? std::max(1, atoi(e)) : 30; }();
+				static const int s_capLimit = [](){ const char* e = getenv("SPRING_FRAME_CAPTURE_LIMIT"); return e ? atoi(e) * s_capEvery : 1800; }();
+				if ((s_cap % s_capEvery) == 0 && s_cap < s_capLimit) {
 					const size_t need = static_cast<size_t>(g_pbufW) * g_pbufH * 4;
 					if (g_presentBuf.size() < need)
 						g_presentBuf.resize(need);
@@ -1700,6 +1702,20 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 	}
 	// exclude debug from SCOPED_TIMER("Misc::SwapBuffers");
 	eventHandler.DbgTimingInfo(TIMING_SWAP, pre, spring_now());
+
+	// Stall detector: draw-frame gaps beyond 150ms land in the infolog with a
+	// timestamped snapshot, so freeze/pause-blur reports match to log lines
+	// (sim catchup vs pause vs slow frame) instead of screenshots.
+	// Disable with SPRING_NO_STALL_LOG=1.
+	{
+		static const bool s_stallLog = (getenv("SPRING_NO_STALL_LOG") == nullptr);
+		const spring_time nowST = spring_now();
+		if (s_stallLog && lastSwapBuffersEnd.toMilliSecsi() > 0) {
+			const float gapMs = (nowST - lastSwapBuffersEnd).toMilliSecsf();
+			if (gapMs > 150.0f)
+				LOG_L(L_WARNING, "[stall] draw gap %.0fms (drawFrame=%u)", gapMs, drawFrame);
+		}
+	}
 	globalRendering->lastSwapBuffersEnd = spring_now();
 }
 
