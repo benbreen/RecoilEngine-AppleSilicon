@@ -22,8 +22,14 @@ FRAMEWORKS="$CONTENTS/Frameworks"
 WRITEDIR="${BAR_WRITEDIR_OVERRIDE:-${HOME}/Library/Application Support/Beyond-All-Reason-mac}"
 LOBBY_RAPID="rapid://byar-chobby:test"
 
-fail_dialog() { # self-addressed AppleScript dialog: no Automation TCC involved
-  osascript -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with title \"BAR Launcher\" with icon caution" >/dev/null 2>&1 || true
+fail_dialog() { # self-addressed AppleScript dialog: no Automation TCC involved.
+  # activate + frontmost so it isn't lost behind another app's window.
+  osascript >/dev/null 2>&1 <<OSA || true
+tell application "System Events"
+  activate
+  display dialog "$1" buttons {"OK"} default button 1 with title "BAR Launcher" with icon caution
+end tell
+OSA
 }
 
 mkdir -p "$WRITEDIR"

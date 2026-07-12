@@ -215,6 +215,13 @@ for m in messages {
             alert.suppressionButton?.title = "Don't show this message again"
             alert.suppressionButton?.state = suppressDefaultOn ? .on : .off
         }
+        // force the panel in front of every other app (activate() alone races)
+        let win = alert.window
+        win.level = .floating
+        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        win.makeKeyAndOrderFront(nil)
+        win.orderFrontRegardless()
+        app.activate(ignoringOtherApps: true)
         let ret = alert.runModal()
         let idx = max(0, min(ret.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue, buttons.count - 1))
         clicked = buttons[idx]

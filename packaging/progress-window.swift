@@ -51,7 +51,10 @@ final class ProgressController: NSObject, NSApplicationDelegate {
 
         let cv = window.contentView!
         cv.addSubview(status); cv.addSubview(detail); cv.addSubview(bar); cv.addSubview(quit)
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
 
         readStdin()

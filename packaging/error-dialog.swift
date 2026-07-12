@@ -82,7 +82,10 @@ final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
         q.keyEquivalent = "\r"
         q.keyEquivalentModifierMask = []
 
+        win.level = .floating
+        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         win.makeKeyAndOrderFront(nil)
+        win.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
     }
 

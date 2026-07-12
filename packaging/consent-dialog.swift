@@ -22,6 +22,20 @@ let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 app.activate(ignoringOtherApps: true)
 
+// Run an alert reliably in FRONT of every other app. activate() alone races
+// (focus may sit on another app when this separate process launches), so also
+// raise the panel above normal windows and let it show on the active Space
+// (even over a fullscreen game). Used for both the notice and the gate.
+func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
+    let w = alert.window
+    w.level = .floating
+    w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    w.makeKeyAndOrderFront(nil)
+    w.orderFrontRegardless()
+    app.activate(ignoringOtherApps: true)
+    return alert.runModal()
+}
+
 let alert = NSAlert()
 alert.messageText = "Recoil Engine"
 
@@ -40,7 +54,7 @@ if let notice = arg("--notice") {
     sig.autoresizingMask = [.width]
     alert.accessoryView = sig
     alert.addButton(withTitle: "OK")
-    _ = alert.runModal()
+    _ = present(alert)
     exit(0)
 }
 
@@ -58,5 +72,5 @@ alert.alertStyle = .warning
 alert.addButton(withTitle: "Quit")
 alert.addButton(withTitle: "Accept Risk and Run")
 
-let response = alert.runModal()
+let response = present(alert)
 exit(response == .alertSecondButtonReturn ? 0 : 1)
