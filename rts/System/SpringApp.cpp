@@ -1229,6 +1229,30 @@ bool SpringApp::MainEventHandler(const SDL_Event& event)
 				sound->DeviceChanged(event.adevice.which, true);
 		} break;
 		case SDL_QUIT: {
+#if defined(__APPLE__)
+			// Cmd+Q is reflexive on macOS and lives next to heavily-used RTS
+			// modifiers; SDL's app menu posts SDL_QUIT for it, and an instant
+			// exit abandons a live multiplayer match. While a game is running
+			// (and not over), require a second Cmd+Q within 3 seconds — the
+			// same guard class SC2 uses. Outside a game (lobby), quit at once.
+			//
+			// Only the PHYSICAL Cmd(+Q) chord is guarded: SDL also delivers
+			// SDL_QUIT for system-initiated termination (SIGTERM/SIGINT,
+			// logout, the window's close button), and swallowing those would
+			// make the process unkillable-by-TERM (breaks `timeout`-capped
+			// harness runs and OS shutdown).
+			const uint8_t* keyState = SDL_GetKeyboardState(nullptr);
+			const bool cmdChordDown = ((SDL_GetModState() & KMOD_GUI) != 0) && keyState[SDL_SCANCODE_Q];
+			if (cmdChordDown && game != nullptr && !game->IsGameOver()) {
+				static spring_time lastQuitEvent = spring_time(0);
+				const spring_time now = spring_now();
+				if ((now - lastQuitEvent).toSecsf() > 3.0f) {
+					lastQuitEvent = now;
+					LOG_L(L_WARNING, "Press Cmd+Q again within 3 seconds to quit the match");
+					break;
+				}
+			}
+#endif
 			gu->globalQuit = true;
 		} break;
 		case SDL_TEXTEDITING: {
