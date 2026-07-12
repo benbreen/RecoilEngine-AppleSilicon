@@ -1,5 +1,28 @@
 # Beyond All Reason — for macOS (Apple Silicon)
 
+<p align="center">
+  <a href="https://github.com/benbreen/BeyondAllReason-Apple/releases/latest"><img src="https://img.shields.io/github/v/release/benbreen/BeyondAllReason-Apple?logo=apple&label=download&color=1793d1" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple" alt="macOS · Apple Silicon">
+  <a href="https://github.com/benbreen/BeyondAllReason-Apple/releases"><img src="https://img.shields.io/github/downloads/benbreen/BeyondAllReason-Apple/total?color=44cc11" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/license-GPL--2.0-blue" alt="License: GPL-2.0">
+  <img src="https://img.shields.io/badge/built%20on-Recoil-orange" alt="Built on the Recoil engine">
+</p>
+
+> ⚡️ **A Claude Fable port.** The macOS layer in this repository was built
+> largely by **[Claude Fable](https://www.anthropic.com)** (Anthropic's Claude
+> model), on top of ExaDev's foundational macOS work — see
+> [What this project did](#what-this-project-did).
+
+<p align="center">
+  <a href="https://github.com/benbreen/BeyondAllReason-Apple/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
+  &nbsp;·&nbsp; requires an Apple Silicon Mac on macOS 26+
+</p>
+
+<p align="center">
+  <img src="screenshots/hero.jpg" alt="Beyond All Reason running natively on macOS (Apple Silicon)" width="100%">
+  <br><em>Beyond All Reason running natively on an Apple Silicon Mac.</em>
+</p>
+
 **[Beyond All Reason](https://www.beyondallreason.info/) is a free, open-source
 real-time strategy game. This project lets you play it natively on Apple Silicon
 Macs** — no Rosetta, no virtual machine — with full graphics and full online
@@ -75,6 +98,14 @@ build.
   (Chobby) networking, music/effects via openal-soft, P/E-core-aware
   threading.
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/battle.jpg" width="49%" alt="A battle mid-map — two armies clashing with the full HUD">
+  <img src="screenshots/valley.jpg" width="49%" alt="An army massing in a mountain valley">
+  <br><em>Real matches, full interface — captured on macOS. (More in the game itself.)</em>
+</p>
+
 ## Requirements
 
 - Apple Silicon Mac (developed/benchmarked on M2 Ultra; the graphics work
@@ -136,6 +167,24 @@ into releases): `SPRING_MAC_PRESENT_TEST`, `SPRING_FRAME_CAPTURE[_EVERY/_LIMIT]`
 `SPRING_MAC_DUMP_FRAME`, `SPRING_TIME_PRESENT`, `SPRING_MAC_PRESENT_LAG`,
 `SPRING_MAC_PRESENT_GPUPACK`.
 
+## Documentation
+
+Deeper docs live alongside the code — start with **AGENTS.md** if you want to
+work on the port (with or without an AI agent).
+
+| Document | What it is |
+|---|---|
+| [AGENTS.md](AGENTS.md) | Start here to work on the port: read-order, the hard rules, and how to build. Written so an AI coding agent can get up and running. |
+| [docs/PORTING_PRINCIPLES.md](docs/PORTING_PRINCIPLES.md) | The golden rules — the determinism contract, sim untouchability, per-subsystem strategy, and the verification ladder. |
+| [SYNC_VALIDATION.md](SYNC_VALIDATION.md) | How multiplayer bit-exactness is proven: method, numbers, reproduction commands, and honest limits. |
+| [IMPROVEMENTS.md](IMPROVEMENTS.md) | What the port changes and why — each entry symptom → cause → fix → measured result. |
+| [docs/MAINTENANCE.md](docs/MAINTENANCE.md) | How the macOS layer rides upstream: the version-bump / rebase-onto-a-new-release procedure. |
+| [docs/AGENT_FAILURE_MODES.md](docs/AGENT_FAILURE_MODES.md) | What halts or silently misleads an automated agent on macOS (dialogs, permissions, fallbacks). |
+| [docs/LESSONS.md](docs/LESSONS.md) | Numbered, citable gotchas already hit during the port. |
+| [docs/UPSTREAM_CANDIDATES.md](docs/UPSTREAM_CANDIDATES.md) | Fixes in this layer that belong upstream, so the patch series shrinks over time. |
+| [docs/VERSIONS.md](docs/VERSIONS.md) | Pinned versions (engine, driver, toolchain) and why each is pinned. |
+| [docs/SOUND_WARNINGS_CATALOG.md](docs/SOUND_WARNINGS_CATALOG.md) | Reference for the audio-subsystem warnings you may see in the log. |
+
 ## Credits
 
 This port stands on a lot of prior work, gratefully:
@@ -158,9 +207,12 @@ This port stands on a lot of prior work, gratefully:
 
 ## License
 
-GPL v2 or later, same as upstream — see [COPYING](COPYING). Complete
-corresponding source for every shipped binary is this repository plus the
-pinned/patched dependency set documented in the release notes.
+**GPL-2.0-or-later**, same as the upstream Recoil engine — full text in
+[LICENSE](LICENSE). Bundled components keep their own compatible licenses
+(streflop/vendored libm under LGPL, the SDL/OpenAL/Mesa stack under MIT/BSD/zlib
+— see [COPYING](COPYING) and the component directories). Complete corresponding
+source for every shipped binary is this repository plus the pinned/patched
+dependency set documented in the release notes.
 
 ## Reporting issues
 
