@@ -61,8 +61,19 @@ namespace math {
 	inline double exp(double x) { return streflop::exp(Double(x)); }
 	inline float log(float x) { return streflop::log(Simple(x)); }
 	inline double log(double x) { return streflop::log(Double(x)); }
-	inline float floor(float x) { return streflop::floor(Simple(x)); }
-	inline double floor(double x) { return streflop::floor(Double(x)); }
+	// FLEET PARITY (do not "fix" to IEEE floor): official builds resolve
+	// math::floor to fastmath::floor, a trunc-via-int template whose
+	// static_cast<int>(f) is UB for NaN/out-of-range and on x86 compiles to
+	// cvttss2si/cvttsd2si => INT_MIN. arm64 fcvtzs would saturate differently
+	// (NaN->0, +ovf->INT_MAX), so emulate the x86 conversion explicitly:
+	// every platform must reproduce the fleet's exact result or synced Lua
+	// (math.floor) and engine floor callsites diverge in lockstep games
+	// (found live: raptors gadget floor(0/0) -> fleet INT_MIN vs IEEE NaN,
+	// desync at frame 16).
+	inline int x86_cvtt_i32(float x)  { return (x >= -2147483648.0f && x < 2147483648.0f) ? (int)x : (-2147483647-1); }
+	inline int x86_cvtt_i32(double x) { return (x >= -2147483648.0  && x < 2147483648.0 ) ? (int)x : (-2147483647-1); }
+	inline float  floor(float x)  { float  t = (float)x86_cvtt_i32(x);  return t - (float)(t > x); }
+	inline double floor(double x) { double t = (double)x86_cvtt_i32(x); return t - (double)(t > x); }
 	inline float ceil(float x) { return streflop::ceil(Simple(x)); }
 	inline double ceil(double x) { return streflop::ceil(Double(x)); }
 	inline int isnan(float x) { return streflop::isnan(Simple(x)); }
