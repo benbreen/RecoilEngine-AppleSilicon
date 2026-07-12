@@ -119,32 +119,56 @@ DONE_SENTINEL="$WRITEDIR/.lobby-installed"
 LOG="$WRITEDIR/first-run-download.log"
 HELPER="$HERE/progress-window"
 
+# Dialog versioning + acknowledgement files (in the writedir, so they persist
+# across app reinstalls — the CONTENT sentinel above must NEVER be conflated
+# with consent, which was the old skip-the-disclaimer bug). Bump a *_VERSION
+# to re-show that dialog once.
+CONSENT_VERSION="1"
+NOTICE_VERSION="1"
+CONSENT_ACK="$WRITEDIR/.consent-ack"
+NOTICE_ACK="$WRITEDIR/.notice-ack"
+MESSAGE_SEEN="$WRITEDIR/.message-seen"
+# Remote message config (announcements / kill-switch); overridable for testing.
+MESSAGE_CONFIG_URL="${BAR_MESSAGE_CONFIG_URL:-https://raw.githubusercontent.com/benbreen/recoil-apple-messages/main/messages.json}"
+PORT_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$CONTENTS/Info.plist" 2>/dev/null || echo 0)"
+
 if [ "${BAR_SKIP_CONTENT_CHECK:-0}" != "1" ]; then
   FIRST_RUN=1; [ -f "$DONE_SENTINEL" ] && FIRST_RUN=0
-  # Startup dialogs, shown on EVERY launch and NOT gated on first-run/content
-  # state — the disclaimer is the legal opt-in and must never be skippable
-  # just because content already exists on disk. Order (user requirement):
-  #   1. ONLINE PLAY IS DISABLED notice (informational; OK)
-  #   2. disclaimer / consent gate (Quit default; Quit exits the app)
-  # BAR_ASSUME_CONSENT=1 skips both (build smokes/harness only).
-  if [ "${BAR_ASSUME_CONSENT:-0}" != "1" ] && [ -x "$HERE/consent-dialog" ]; then
-    # 1) online-play-disabled notice (only in builds that block online)
-    if [ -f "$RES/.online-play-disabled" ]; then
-      "$HERE/consent-dialog" --notice "ONLINE PLAY IS DISABLED in this build while I seek approval from the creators of Beyond All Reason to connect to their community servers.
+
+  if [ "${BAR_ASSUME_CONSENT:-0}" != "1" ]; then
+    # 1) REMOTE messages (announcements + kill-switch for bad builds).
+    #    Fail-open by design: offline / config host down -> exit 0, continue.
+    #    THIS is exactly why the disclaimer (step 3) is LOCAL and hardcoded —
+    #    a flaky connection must never be able to skip it. A blocking message
+    #    returns 2 -> quit.
+    if [ -x "$HERE/message-check" ]; then
+      "$HERE/message-check" --config-url "$MESSAGE_CONFIG_URL" \
+        --app-version "$PORT_VERSION" --seen-file "$MESSAGE_SEEN" --timeout 4
+      [ "$?" = "2" ] && exit 0
+    fi
+    if [ -x "$HERE/consent-dialog" ]; then
+      # 2) ONLINE PLAY IS DISABLED notice — LOCAL, shown once per NOTICE_VERSION.
+      if [ -f "$RES/.online-play-disabled" ] && \
+         [ "$(cat "$NOTICE_ACK" 2>/dev/null)" != "$NOTICE_VERSION" ]; then
+        "$HERE/consent-dialog" --notice "ONLINE PLAY IS DISABLED in this build while I seek approval from the creators of Beyond All Reason to connect to their community servers.
 
 The game opens on a sign-in screen first — press Cancel to reach everything that works offline: skirmish against AI, replays, and local-network (LAN) games.
 
 If you do try to sign in or open an online menu, it will simply fail to reach the server — there is no in-game message explaining why, because online play is blocked outside the game, not inside it.
 
 I hope online play can be enabled very soon." || true
+        echo "$NOTICE_VERSION" > "$NOTICE_ACK"
+      fi
+      # 3) DISCLAIMER / consent — LOCAL and hardcoded (never network-gated).
+      #    Shown once per CONSENT_VERSION; tracked by .consent-ack (independent
+      #    of content state). Quit exits. server shown = the host
+      #    download-content.sh actually fetches from (single source of truth).
+      if [ "$(cat "$CONSENT_ACK" 2>/dev/null)" != "$CONSENT_VERSION" ]; then
+        CONTENT_SERVER="$("$RES/download-content.sh" --print-server 2>/dev/null)"
+        "$HERE/consent-dialog" --server "${CONTENT_SERVER:-the BAR content network}" || exit 0
+        echo "$CONSENT_VERSION" > "$CONSENT_ACK"
+      fi
     fi
-    # 2) disclaimer / consent gate — the app downloads a game from a
-    # third-party network and may auto-update it; the user must opt in every
-    # launch (default = Quit). server shown = the host download-content.sh
-    # actually fetches from (single source of truth; --print-server strips
-    # scheme/path).
-    CONTENT_SERVER="$("$RES/download-content.sh" --print-server 2>/dev/null)"
-    "$HERE/consent-dialog" --server "${CONTENT_SERVER:-the BAR content network}" || exit 0
   fi
   : > "$LOG"
   # Show the progress window immediately (fed via a fifo). If the helper is

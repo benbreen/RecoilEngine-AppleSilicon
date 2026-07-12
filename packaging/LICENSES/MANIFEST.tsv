@@ -60,3 +60,4 @@ libintl*.dylib	gettext runtime (fontconfig dep)	LGPL-2.1	DYNAMIC link only; text
 progress-window	BAR macOS port (first-run progress UI)	GPL-2.0-or-later	Part of this project; source in packaging/
 error-dialog	BAR macOS port (error dialog UI)	GPL-2.0-or-later	Part of this project; source in packaging/
 consent-dialog	BAR macOS port (first-run consent UI)	GPL-2.0-or-later	Part of this project; source in packaging/
+message-check	BAR macOS port (remote message/kill-switch UI)	GPL-2.0-or-later	Part of this project; source in packaging/
