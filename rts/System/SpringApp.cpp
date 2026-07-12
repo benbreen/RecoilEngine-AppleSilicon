@@ -116,6 +116,7 @@ CONFIG(int, MaxPinnedFonts).defaultValue(10).description("Maximum number of font
 
 CONFIG(std::string, name).defaultValue(UnnamedPlayerName).description("Sets your name in the game. Since this is overridden by lobbies with your lobby username when playing, it usually only comes up when viewing replays or starting the engine directly for testing purposes.");
 CONFIG(std::string, DefaultStartScript).defaultValue("").description("filename of script.txt to use when no command line parameters are specified.");
+CONFIG(std::string, WindowTitle).defaultValue("").description("Window title; \"{version}\" expands to the engine version. Empty = the engine's default title.");
 CONFIG(std::string, SplashScreenDir).defaultValue(".");
 
 
@@ -252,8 +253,16 @@ bool SpringApp::Init()
 	Watchdog::Install();
 	Watchdog::RegisterThread(WDT_MAIN, true);
 
-	// Create Window
-	if (!InitWindow(("Recoil " + SpringVersion::GetFull()).c_str())) {
+	// Create Window. The title is configurable so a game distribution can
+	// brand the window ("{version}" expands to the engine version); empty
+	// (the default) keeps the engine's own name.
+	std::string windowTitle = configHandler->GetString("WindowTitle");
+	if (windowTitle.empty()) {
+		windowTitle = "Recoil " + SpringVersion::GetFull();
+	} else if (const size_t vpos = windowTitle.find("{version}"); vpos != std::string::npos) {
+		windowTitle.replace(vpos, sizeof("{version}") - 1, SpringVersion::GetFull());
+	}
+	if (!InitWindow(windowTitle.c_str())) {
 		SDL_Quit();
 		return false;
 	}
@@ -419,6 +428,8 @@ bool SpringApp::InitFileSystem()
  */
 bool SpringApp::InitWindow(const char* title)
 {
+	LOG("[SpringApp::%s] window title: \"%s\"", __func__, title != nullptr ? title : "");
+
 	// SDL will cause a creation of gpu-driver thread that will clone its name from the starting threads (= this one = mainthread)
 	Threading::SetThreadName("gpu-driver");
 
