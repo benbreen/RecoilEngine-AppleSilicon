@@ -41,15 +41,40 @@ version **2025.06.24**, the version the live fleet runs.
 ## What this project did
 
 The macOS *foundation* — the first working Apple Silicon builds, the
-surfaceless-EGL → Zink graphics path, and the ARM64 deterministic-math work now
+surfaceless-EGL → Zink graphics path, and the ARM64 deterministic-math
+groundwork now
 [merged into the official engine](https://github.com/beyond-all-reason/RecoilEngine/pull/2819)
 — comes from [ExaDev's macOS fork](https://github.com/ExaDev/RecoilEngine), whose
 commits keep their authorship here (full [Credits](#credits) below).
 
-This repository is the substantial layer built on top of that foundation,
+That foundation ran the game on a Mac, but it did **not** yet produce a
+*compliant* engine — one that can join public multiplayer without desyncing.
+BAR is lockstep-deterministic: every client recomputes the entire simulation
+and must get **bit-identical** results, and an Apple Silicon client still
+diverged from the x86 fleet in three ways:
+
+1. **A different math library.** Apple's libm returns per-ULP-different
+   results for `double` functions than the glibc implementations the fleet's
+   builds use — any one call in synced code is a desync.
+2. **Undefined float→integer conversions.** Out-of-range float→int is
+   undefined behavior; the fleet's gcc-x86 binaries saturate in hardware
+   (`cvttss2si`) and game unit scripts rely on that value, while clang-arm64
+   computed something else (the cause of a real desync in Raptors games).
+3. **Fused multiply-adds.** On ARM the compiler freely contracts `a*b+c` into
+   one `fmadd` with different rounding — a single contraction in synced code
+   is a 1-ULP, game-ending divergence.
+
+This repository is the layer that closed those gaps and **proved** the result,
 developed largely by **Claude Fable** (Anthropic's Claude model) with direction
 from the maintainer — not a thin wrapper:
 
+- **Bit-exact cross-architecture simulation** — the core of the port: the
+  glibc dbl-64 libm compiled in for fleet-parity `double` math (guarded by a
+  9/9 libm hash gate in every build), x86 conversion semantics reproduced on
+  arm64, `-ffp-contract=off` enforced globally, and a UB sweep of synced code
+  — then certified bit-exact over full-length 8v8 replays and live
+  cross-platform matches ([SYNC_VALIDATION.md](SYNC_VALIDATION.md); the
+  complete register of synced-code changes is its Appendix A).
 - **A rebuilt macOS graphics-present path.** The EGL/Metal context and the whole
   read-back-and-present pipeline were extracted into a proper `Platform/Mac`
   backend, and the driver stalls and bugs that made the earlier path unshippable
@@ -61,9 +86,6 @@ from the maintainer — not a thin wrapper:
 - **A month-one performance campaign** taking heavy late-game scenes from
   single-digit frame rates to display-class ones at 5K, pixel-identical (table
   below).
-- **Multiplayer sync certification** — bit-exact lockstep proven over
-  full-length replays and live cross-platform matches (see
-  [SYNC_VALIDATION.md](SYNC_VALIDATION.md)).
 - **Native-Mac behaviour** — correct window title, Cmd-based clipboard, a Cmd+Q
   guard so a reflex keystroke can't abandon a live match, Local-Network
   permission handling, and loud failure instead of a silent slow software
@@ -127,10 +149,40 @@ build.
 ## Building / stack
 
 The GL stack is upstream Mesa (Zink + KosmicKrisp) at a pinned commit plus
-a three-patch series maintained both as a Mesa fork branch and as plain
+a small patch series maintained both as a Mesa fork branch and as plain
 `patches/mesa/*.patch` — the driver is reproducible from pure upstream
 source. Engine-side macOS work is a curated, reviewable commit series on
 top of the upstream release tag, written to be upstreamable piecewise.
+
+## Building the macOS app
+
+Everything needed ships in this repository — the engine source, the Mesa
+patch series (`patches/mesa/`), the driver/engine build scripts
+(`scripts/`), and the packaging pipeline (`packaging/`, `Makefile`).
+
+Prerequisites: an Apple Silicon Mac on macOS 26+, Xcode Command Line Tools,
+and [Homebrew](https://brew.sh) — the build installs the packages it needs
+(SDL2, LLVM 19 for the driver compile, openal-soft, …) as it goes.
+
+```sh
+make app       # everything: pinned Mesa driver (cached after the first
+               # build) -> engine + determinism gates -> Beyond All
+               # Reason.app + .dmg (ad-hoc signed, local use)
+make certify   # same + full replay-determinism certification (GPU, ~1h)
+make release   # certified + Developer ID signed + notarized (needs
+               #   IDENTITY="Developer ID Application: ..." and
+               #   NOTARY_PROFILE=<notarytool keychain profile>)
+make engine    # just the engine binary, with the sync gates
+```
+
+What the build does, in order: builds the Mesa Zink+KosmicKrisp driver from
+the pinned upstream commit + `patches/mesa/` (provenance-stamped, skipped
+when already built); builds the engine against it with the deterministic-FP
+configuration; runs the libm fleet-parity hash gate and the cross-arch
+streflop sync-test; stages, signs, and (for `make release`) notarizes the
+bundle with the styled drag-to-install DMG. Heavier validation (full-replay
+determinism, GPU driver-identity smoke) is the certify tier — mirroring
+upstream Recoil CI, where build and validation are separate workflows.
 
 ## Runtime knobs
 
