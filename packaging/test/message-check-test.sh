@@ -129,6 +129,64 @@ python3 "$PKG/../message-config/assemble.py" >/dev/null 2>&1
 ex=$("$BIN" --config-url "file://$PKG/../message-config/messages.json" --app-version 0.1 --seen-file "$WORK/none-g" --dry-run 2>/dev/null | awk '/^SHOW/{c++} END{print c+0}')
 [ "$ex" -ge 1 ] && ok "assembled messages.json parses and targets v0.1 ($ex message(s))" || bad "example parse" "shown=$ex"
 
+# ---------- all comparison operators -----------------------------------------
+echo "== comparison operators =="
+cat > "$WORK/ops.jsonc" <<'JSON'
+{ "schema":1, "messages":[
+  {"id":"eq","target":{"op":"eq","version":"2.0"},"title":"","body":"<p/>","frequency":"always","buttons":[{"label":"OK","action":"continue","default":true}]},
+  {"id":"ne","target":{"op":"ne","version":"2.0"},"title":"","body":"<p/>","frequency":"always","buttons":[{"label":"OK","action":"continue","default":true}]},
+  {"id":"le","target":{"op":"le","version":"2.0"},"title":"","body":"<p/>","frequency":"always","buttons":[{"label":"OK","action":"continue","default":true}]},
+  {"id":"ge","target":{"op":"ge","version":"2.0"},"title":"","body":"<p/>","frequency":"always","buttons":[{"label":"OK","action":"continue","default":true}]},
+  {"id":"gt","target":{"op":"gt","version":"2.0"},"title":"","body":"<p/>","frequency":"always","buttons":[{"label":"OK","action":"continue","default":true}]},
+  {"id":"lt","target":{"op":"lt","version":"2.0"},"title":"","body":"<p/>","frequency":"always","buttons":[{"label":"OK","action":"continue","default":true}]}
+]}
+JSON
+ops() { "$BIN" --config-url "file://$WORK/ops.jsonc" --app-version "$1" --seen-file "$WORK/no-$RANDOM" --dry-run 2>/dev/null | awk '/^SHOW/{sub(/^SHOW id=/,"");print $1}' | sort | paste -sd, -; }
+[ "$(ops 2.0)" = "eq,ge,le" ] && ok "v2.0 -> eq,le,ge"  || bad "ops 2.0" "$(ops 2.0)"
+[ "$(ops 1.9)" = "le,lt,ne" ] && ok "v1.9 -> ne,lt,le"  || bad "ops 1.9" "$(ops 1.9)"
+[ "$(ops 2.1)" = "ge,gt,ne" ] && ok "v2.1 -> ne,gt,ge"  || bad "ops 2.1" "$(ops 2.1)"
+
+# ---------- button actions + config-specified default ------------------------
+echo "== button actions & default selection =="
+mk() { printf '{ "schema":1, "messages":[{"id":"b","target":{"op":"all"},"title":"","body":"<p/>","frequency":"always","buttons":%s}]}' "$1" > "$WORK/b.jsonc"; }
+ec() { "$BIN" --config-url "file://$WORK/b.jsonc" --app-version 1 --seen-file "$WORK/nb-$RANDOM" --dry-run >/dev/null 2>&1; echo $?; }
+mk '[{"label":"Open","action":"open-url","url":"https://x","then":"continue","default":true},{"label":"Q","action":"quit"}]'
+[ "$(ec)" = 0 ] && ok "default open-url then=continue -> exit 0" || bad "openurl-cont"
+mk '[{"label":"Open","action":"open-url","url":"https://x","then":"quit","default":true},{"label":"Stay","action":"continue"}]'
+[ "$(ec)" = 2 ] && ok "default open-url then=quit -> exit 2" || bad "openurl-quit"
+mk '[{"label":"Stay","action":"continue"},{"label":"Quit","action":"quit","default":true}]'
+[ "$(ec)" = 2 ] && ok "config default=2nd(quit) overrides first-button default -> exit 2" || bad "default2"
+printf '{ "schema":1, "messages":[{"id":"b","target":{"op":"all"},"title":"","body":"<p/>","frequency":"always"}]}' > "$WORK/b.jsonc"
+o=$("$BIN" --config-url "file://$WORK/b.jsonc" --app-version 1 --seen-file "$WORK/nb0" --dry-run 2>/dev/null)
+{ echo "$o" | grep -q 'default=OK' && "$BIN" --config-url "file://$WORK/b.jsonc" --app-version 1 --seen-file "$WORK/nb0b" --dry-run >/dev/null 2>&1; } \
+  && ok "no buttons -> synthesised OK/continue" || bad "empty buttons" "$o"
+
+# ---------- JSONC comment stripping is url-safe ------------------------------
+echo "== JSONC url-safety =="
+cat > "$WORK/jc.jsonc" <<'JSON'
+{
+  // a full-line comment, must be stripped
+  "schema": 1,
+  "messages": [
+    { "id":"u", "target":{"op":"all"}, "title":"t", "body":"<a href='https://example.com/x'>l</a>", "frequency":"always",
+      "buttons":[{"label":"Go","action":"open-url","url":"https://example.com/p","then":"continue","default":true}] }
+  ]
+}
+JSON
+[ "$("$BIN" --config-url "file://$WORK/jc.jsonc" --app-version 1 --seen-file "$WORK/nj" --dry-run 2>/dev/null | grep -c '^SHOW')" = 1 ] \
+  && ok "full-line // stripped; https:// inside values preserved" || bad "jsonc url"
+
+# ---------- assemble.py validation -------------------------------------------
+echo "== assemble.py validation =="
+AT="$WORK/at"; mkdir -p "$AT/messages"; cp "$PKG/../message-config/assemble.py" "$AT/"
+echo '{"id":"a","target":{"op":"all"},"title":"t","body":"<p/>"}' > "$AT/messages/a.jsonc"
+echo '{"id":"a","target":{"op":"all"},"title":"t","body":"<p/>"}' > "$AT/messages/b.jsonc"
+python3 "$AT/assemble.py" --check >/dev/null 2>&1; [ $? = 1 ] && ok "duplicate id rejected" || bad "dup id"
+rm "$AT/messages/b.jsonc"; printf '{ not json' > "$AT/messages/c.jsonc"
+python3 "$AT/assemble.py" --check >/dev/null 2>&1; [ $? = 1 ] && ok "invalid JSON rejected" || bad "bad json"
+rm "$AT/messages/c.jsonc"
+python3 "$AT/assemble.py" --check >/dev/null 2>&1 && ok "clean set validates" || bad "clean validate"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -28,9 +28,11 @@ fail_dialog() { # self-addressed AppleScript dialog: no Automation TCC involved
 
 mkdir -p "$WRITEDIR"
 chmod 700 "$WRITEDIR"
-# content pool is re-downloadable — keep it out of Time Machine backups
+# content pool is re-downloadable — keep it out of Time Machine backups.
+# Fire-and-forget: tmutil talks to backupd and can block (stuck daemon /
+# permissions); this exclusion is cosmetic and must never delay launch.
 mkdir -p "$WRITEDIR/pool" "$WRITEDIR/cache"
-tmutil addexclusion "$WRITEDIR/pool" "$WRITEDIR/cache" >/dev/null 2>&1 || true
+{ tmutil addexclusion "$WRITEDIR/pool" "$WRITEDIR/cache" >/dev/null 2>&1 || true; } &
 
 ICD="$RES/vulkan/icd.d/kosmickrisp_mesa_icd.aarch64.json"
 if [ ! -f "$ICD" ]; then

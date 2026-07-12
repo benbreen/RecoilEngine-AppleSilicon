@@ -32,7 +32,7 @@ VERSION_ARG := $(if $(VERSION),--version "$(VERSION)",)
 ONLINE_ARG  := $(if $(ONLINE),--enable-online,)
 
 .DEFAULT_GOAL := help
-.PHONY: help app certify release engine clean-artifacts
+.PHONY: help app engine-dist certify release engine test clean-artifacts
 
 help:
 	@echo "macOS packaging (details: README.md 'Building the macOS app'):"
@@ -65,6 +65,10 @@ release:
 
 engine:
 	scripts/build-engine.sh
+
+test:
+	packaging/test/message-check-test.sh
+	packaging/test/launcher-test.sh
 
 clean-artifacts:
 	rm -rf "release-artifacts/BAR Launcher.app" release-artifacts/*.zip release-artifacts/*.dmg
