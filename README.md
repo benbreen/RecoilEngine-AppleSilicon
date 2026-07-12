@@ -1,8 +1,17 @@
 # Recoil engine — native Apple Silicon (macOS) port
 
-This is a fork of the [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine)
-(the engine behind [Beyond All Reason](https://www.beyondallreason.info/)) that
-runs **natively on Apple Silicon Macs**: arm64 end to end, OpenGL 4.6
+**Built on [ExaDev's macOS fork](https://github.com/ExaDev/RecoilEngine) of the
+[Recoil engine](https://github.com/beyond-all-reason/RecoilEngine)** (the engine
+behind [Beyond All Reason](https://www.beyondallreason.info/)). ExaDev did the
+foundational Apple Silicon bring-up — the first working builds, the
+surfaceless-EGL → Zink path, Apple-Silicon CMake support, and the ARM64
+deterministic floating-point work now
+[merged upstream](https://github.com/beyond-all-reason/RecoilEngine/pull/2819).
+**This branch is a thin layer of render/present hardening and packaging on top
+of their work**; their commits (and the upstream Recoil commits they carry) form
+its base and keep their original authorship — see [Credits](#credits).
+
+The result runs **natively on Apple Silicon Macs**: arm64 end to end, OpenGL 4.6
 compatibility profile via Mesa's Zink on
 [KosmicKrisp](https://lunarg.com/kosmickrisp/) (Vulkan-on-Metal), no Rosetta,
 no fidelity compromises. Upstream's own README is
