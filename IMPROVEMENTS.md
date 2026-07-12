@@ -47,8 +47,8 @@ reducing what is drawn.
     flips while compositing);
   - reads go through a PBO ring on Mesa's GPU-pack path (a compute-shader
     pack into a linear buffer; mapping an idle linear buffer needs no GPU
-    round-trip), with a configurable 2-frame pipeline
-    (`SPRING_MAC_PRESENT_LAG`, `SPRING_MAC_PRESENT_GPUPACK`);
+    round-trip) with a 2-frame pipeline (the lag/pack-path overrides are
+    diagnostics-build-only knobs; releases pin the certified defaults);
   - the discovery tool was a 200-line standalone GL readback benchmark;
     the gating requirements (pack buffer bound + non-swizzling format
     pair) are documented for other zink-on-Metal consumers.  [upstream candidate — st/readpixels perf warning or swizzle-capable pack shader]

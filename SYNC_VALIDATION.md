@@ -133,3 +133,25 @@ version string that clearly identifies the macOS port build so server-side
 triage is trivial; commit to a fast-pull policy if any live desync is ever
 attributed to this port. None of that has happened yet — this fork is not
 cleared for ranked play until it has.
+
+## Appendix A — register of synced-code changes
+
+Golden rule 2 of this port is that nothing under `rts/Sim/` (or any synced
+path) changes behavior. The exceptions below are the complete list of
+port-authored commits that touch synced code. Every one of them removes
+**undefined behavior or a platform divergence** — i.e. they change behavior
+only where C++ never defined it or where clang-arm64 already diverged from
+the fleet's gcc-x86 — and every one is covered by the replay certifications
+in §3 and flagged as an upstream candidate.
+
+| Change | Files | Why it is sync-safe |
+|---|---|---|
+| glibc dbl-64 libm import (fleet parity for `double` math) | `rts/lib/streflop/libm/dbl-64/` | Compiles the exact glibc implementations the fleet's gcc builds call, instead of Apple libm. Proven by the cross-arch streflop test (§1: 52,080/52,080 bit-exact) and the dfp libm-hash gate in every build. |
+| `math::floor` x86 `cvttss2si` semantics emulation | `rts/lib/streflop/streflop_cond.h` | Out-of-range float→int conversion is UB; x86 hardware saturates to 0x80000000 and game Lua/COB relies on it (raptors desync). arm64 now computes the same value the fleet computes. |
+| COB callin float→short truncation | `rts/Sim/Units/Scripts/CobInstance.cpp`, `CobThread.cpp` | float→short out-of-range conversion is UB; clang-arm64 and gcc-x86 disagreed. Replaced with defined int32 truncation matching the fleet's observed behavior. |
+| float→short/heading UB sweep | `rts/Sim/Path/IPathController.cpp`, `rts/Sim/MoveTypes/{Ground,HoverAir}MoveType.cpp`, `rts/Lua/LuaSynced{MoveCtrl,Read}.cpp` | Same UB class as above, found by audit rather than by desync. Same defined-truncation replacement. |
+| streflop submodule bump (fleet-parity `math::floor`) | `rts/lib/streflop` | Carries the upstream fix for the same divergence class. |
+
+Everything else the port changes is unsynced (rendering, present, input,
+audio, packaging) or build-system-level with sync gates re-run after every
+change. Pure refactors of the macOS present path never touch `rts/Sim/`.

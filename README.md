@@ -64,6 +64,41 @@ a three-patch series maintained both as a Mesa fork branch and as plain
 source. Engine-side macOS work is a curated, reviewable commit series on
 top of the upstream release tag, written to be upstreamable piecewise.
 
+## Runtime knobs
+
+One policy: **user-facing switches are registered springsettings config
+variables** (discoverable, documented, changeable from the game); **env vars
+are support/debug escape hatches**, and anything heavier is compiled out of
+release builds behind `-DSPRING_MAC_DIAGNOSTICS=ON`.
+
+Config (springsettings.cfg):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `MacPresentDirect` | 1 | Present shader reads the readback ring directly from unified memory; 0 = IOSurface staging path. Runtime-changeable. |
+| `MacWorkerQos` | 1 | Sync-pool ThreadPool workers request USER_INITIATED QoS (prefer the performance cluster). Runtime-changeable. |
+| `WindowTitle` | "" | Window title; `{version}` expands to the engine version. Empty = engine default. |
+
+Environment (support escape hatches; all default off/unset):
+
+| Var | Effect |
+|---|---|
+| `SPRING_MAC_NO_RETINA=1` | Render at logical 1x and let CoreAnimation upscale (readback cost /4 on Retina). |
+| `SPRING_MAC_GL_CORE=1` | Force a core-profile GL context (compat is the default and the supported mode). |
+| `SPRING_MAC_LEGACY_PRESENT=1` | CPU-staging present path (the pre-optimization fallback). |
+| `SPRING_ALLOW_SOFTWARE_GL=1` | Permit the llvmpipe/softpipe fallback instead of failing loudly. |
+| `SPRING_EGL_FULL_TEARDOWN=1` | Real EGL teardown at exit (debug the driver shutdown race; default is fast-exit). |
+| `SPRING_NO_STALL_LOG=1` | Silence the >150ms draw-gap stall log lines. |
+| `SPRING_MAC_STREAM_BUFFERING=n` | Stream-buffer ring depth 2..8 (default 3). |
+| `SPRING_LUAVAO_FORCE_RESTART=1` | Restore upstream primitive-restart behavior on list topologies. |
+| `KK_MATH_MODE=safe\|relaxed\|fast` | KosmicKrisp shader-compiler math mode (engine defaults it to `fast`). |
+| `SPRING_DUMP_STATE_RANGE=min:max` | Dump full synced state per frame in the range (desync triage; local analysis only). |
+
+Diagnostics builds only (`cmake -DSPRING_MAC_DIAGNOSTICS=ON`; not compiled
+into releases): `SPRING_MAC_PRESENT_TEST`, `SPRING_FRAME_CAPTURE[_EVERY/_LIMIT]`,
+`SPRING_MAC_DUMP_FRAME`, `SPRING_TIME_PRESENT`, `SPRING_MAC_PRESENT_LAG`,
+`SPRING_MAC_PRESENT_GPUPACK`.
+
 ## Credits
 
 This port stands on a lot of prior work, gratefully:
