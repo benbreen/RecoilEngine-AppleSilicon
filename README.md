@@ -8,24 +8,30 @@
   <img src="https://img.shields.io/badge/built%20on-Recoil-orange" alt="Built on the Recoil engine">
 </p>
 
-**This project is a native Apple Silicon port of the
+**This project is an unofficial native Apple Silicon port of the
 [Recoil](https://github.com/beyond-all-reason/RecoilEngine) RTS engine** — the
-engine itself, running on macOS with no Rosetta and no virtual machine. It is
-not a game: it is the platform that Recoil/Spring games run on.
+engine itself now runs macOS with no Rosetta and no virtual machine. This means games (such as BAR) can now run natively on macOS. It contains a series of fixes to make sure the behaviour of the game on Apple Silicon matches exactly that of other platforms, plus a series of Apple specific performance improvements.
 
+> [!IMPORTANT]
+> If you run into issues, please report them [here](https://github.com/benbreen/RecoilEngine-AppleSilicon/issues) — **not** in the official Beyond All Reason or Recoil channels. They can't help with problems caused by this port.
+
+> ⚡️ **A Claude Fable port.** The macOS layer in this repository was built
+> largely by **[Claude Fable](https://www.anthropic.com)** (Anthropic's Claude
+> model) — see
+> [How Recoil was Enhanced for Apple Silicon](#how-recoil-was-enhanced-for-apple-silicon).
+
+## Downloading
 For convenience, releases also include an **optional BAR launcher package**: a
-drag-to-install app that (with your explicit consent, and with the caveats
-below) downloads **[Beyond All Reason](https://www.beyondallreason.info/)**
-from its official content network and configures the engine to play it — full
-graphics, full online multiplayer against Windows and Linux players in the
-same lobbies.
+drag-to-install app that  downloads **[Beyond All Reason](https://www.beyondallreason.info/)**
+from its official online location and configures the engine to play it.
 
 **Two downloads** on the [releases page](https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest):
 
 | Artifact | What it is | For whom |
 |---|---|---|
+| `BAR-macos-<ver>.dmg` | **If you want to play BAR on macOS** — the engine plus a BAR launcher: a drag-to-install app that (after an explicit consent prompt) downloads Beyond All Reason from BAR's official content network, keeps it updated, and launches straight into its lobby. | Players who want to play BAR on a Mac. |
 | `Recoil-macos-<engine>-port<ver>.zip` | **The project itself** — the engine port: signed, notarized `spring`, `spring-headless`, and `pr-downloader` with the bundled Metal driver stack. No game content or configuration. | Any Recoil/Spring game community, tooling, or anyone building their own game launcher on top. |
-| `BAR-macos-<ver>.dmg` | **Convenience package** — the engine plus a BAR launcher: a drag-to-install app that (after an explicit consent prompt) downloads Beyond All Reason from BAR's official content network, keeps it updated, and launches straight into its lobby. | Players who want to play BAR on a Mac. |
+
 
 > [!CAUTION]
 > **Unofficial project — third-party game content.** This is an independent
@@ -46,23 +52,16 @@ same lobbies.
 > [BAR project](https://github.com/beyond-all-reason/Beyond-All-Reason);
 > report problems with this port **here**, not to them.
 
-> **Good faith, stated up front.** This project is free, unofficial, and
-> takes no money — no donations, no sponsorships. If the Beyond All Reason or
-> Recoil projects object to any part of it, including the names used, it will
-> be renamed or taken down on request. Support is best-effort. Download only
-> from this repository's [Releases](../../releases) page and verify the
-> published SHA-256 checksums; no other distribution channel is ours. Security
-> issues: see [SECURITY.md](SECURITY.md).
 
-> ⚡️ **A Claude Fable port.** The macOS layer in this repository was built
-> largely by **[Claude Fable](https://www.anthropic.com)** (Anthropic's Claude
-> model), on top of ExaDev's foundational macOS work — see
-> [What this project did](#what-this-project-did).
+
+<p>&nbsp;</p>
 
 <p align="center">
   <a href="https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
   &nbsp;·&nbsp; engine port + optional BAR launcher &nbsp;·&nbsp; macOS 26+
 </p>
+
+## What is Recoil?
 
 <p align="center">
   <img src="screenshots/hero.jpg" alt="Beyond All Reason running natively on macOS (Apple Silicon)" width="100%">
@@ -71,15 +70,14 @@ same lobbies.
 
 The [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine) is the
 program that actually runs a game built on it: the simulation, graphics, and
-networking. The engine ships for Windows and Linux; this repository is a
-native macOS build of it. Under the hood it renders through Apple's Metal
+networking. The engine ships for Windows and Linux; and now this repository is a native macOS build of it. Under the hood it renders through Apple's Metal
 (OpenGL 4.6 → Mesa Zink → [KosmicKrisp](https://lunarg.com/kosmickrisp/) →
 Metal) and simulates bit-identically to the official builds, so a Mac client
 shares the same matches and replays as everyone else. Pinned to engine
 version **2025.06.24**, the version BAR's live fleet runs; the screenshots
 and benchmarks throughout show the engine port running Beyond All Reason.
 
-## What this project did
+## How Recoil was Enhanced for Apple Silicon
 
 The macOS *foundation* — the first working Apple Silicon builds, the
 surfaceless-EGL → Zink graphics path, and the ARM64 deterministic-math
@@ -328,10 +326,5 @@ launch.
 ## Reporting issues
 
 This is an unofficial port: please report problems **on this repository's
-issue tracker**, not to the Recoil or BAR projects — a bug here is most likely
+issue tracker [here](https://github.com/benbreen/RecoilEngine-AppleSilicon/issues)**, not to the Recoil or BAR projects — a bug here is most likely
 this port's fault, and their trackers shouldn't carry our noise.
-
-Open a GitHub issue with your `infolog.txt` (it includes the one-line
-driver-identity print so we can see which GL stack actually loaded). For
-anything that looks like a sync/desync problem, please say so in the title —
-those get priority and a documented triage path (see SYNC_VALIDATION.md §5).
