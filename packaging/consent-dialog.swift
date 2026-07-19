@@ -40,6 +40,10 @@ func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
     let w = alert.window
     w.level = .floating
     w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    // center BEFORE ordering front: we show the window ahead of runModal (to
+    // beat other apps' focus), so runModal never gets to position it — without
+    // this it appears at the frame's default origin (off to the left).
+    w.center()
     w.makeKeyAndOrderFront(nil)
     w.orderFrontRegardless()
     app.activate(ignoringOtherApps: true)
