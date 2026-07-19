@@ -65,7 +65,7 @@ from its official online location and configures the engine to play it.
 
 <p align="center">
   <img src="screenshots/hero.jpg" alt="Beyond All Reason running natively on macOS (Apple Silicon)" width="100%">
-  <br><em>The engine port running Beyond All Reason natively on an Apple Silicon Mac.</em>
+  <br><em>Recoil running Beyond All Reason natively on an Apple Silicon Mac.</em>
 </p>
 
 The [Recoil engine](https://github.com/beyond-all-reason/RecoilEngine) is the
@@ -143,9 +143,13 @@ build.
   with zero sync errors. Method, numbers, reproduction commands, and honest
   limits: **[SYNC_VALIDATION.md](SYNC_VALIDATION.md)**.
 
-  > Online multiplayer, skirmish vs AI, replays, and local-network (LAN)
-  > games all work. This is an unofficial port: please report problems with
-  > it [here](../../issues), not to the official BAR/Recoil teams.
+  > **Online play is currently disabled in released builds** while approval
+  > to connect to BAR's community servers is sought from the game's creators.
+  > Skirmish vs AI, replays, and local-network (LAN) games all work; the sim
+  > is online-*capable* and certified above — the block is a deliberate
+  > policy choice in the launcher, not a technical limit. This is an
+  > unofficial port: please report problems with it [here](../../issues),
+  > not to the official BAR/Recoil teams.
 - **Native performance.** A month-one optimization campaign took the heavy
   late-game scenes from single-digit to display-class frame rates at 5K with
   pixel-identical output (measured on an M2 Ultra Mac Studio, vsync on):
@@ -220,10 +224,13 @@ make release     # certified + Developer ID signed + notarized (needs
 make engine      # just the engine binary, with the sync gates
 ```
 
-**Online play is enabled by default.** To build a copy with the online lobby
-disabled (it then resolves to an unreachable loopback endpoint; LAN and local
-play are unaffected), pass `ONLINE=0` (e.g. `ONLINE=0 make app`) or
-`packaging/release-build.sh --disable-online`.
+**Released builds currently ship with online play disabled** (the online
+lobby resolves to an unreachable loopback endpoint; LAN and local play are
+unaffected) while approval to connect to BAR's community servers is sought.
+Source builds default to online enabled; to reproduce the released
+configuration, pass `ONLINE=0` (e.g. `ONLINE=0 make app`) or
+`packaging/release-build.sh --disable-online`. Please do not distribute
+online-enabled builds until that approval is in place.
 
 What the build does, in order: builds the Mesa Zink+KosmicKrisp driver from
 the pinned upstream commit + `patches/mesa/` (provenance-stamped, skipped
