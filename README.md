@@ -1,4 +1,4 @@
-# RecoilEngine-AppleSilicon — the Recoil engine, native on macOS (Apple Silicon)
+# Recoil Engine Port to Apple Silicon - Plays Beyond All Reason (BAR) natively on macOS
 
 <p align="center">
   <a href="https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest"><img src="https://img.shields.io/github/v/release/benbreen/RecoilEngine-AppleSilicon?logo=apple&label=download&color=1793d1" alt="Latest release"></a>
