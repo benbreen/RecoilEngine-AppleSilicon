@@ -79,7 +79,7 @@ func fetchConfig() -> Data? {
     let sem = DispatchSemaphore(value: 0)
     var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
                          timeoutInterval: timeout)
-    req.setValue("recoil-apple-launcher", forHTTPHeaderField: "User-Agent")
+    req.setValue("RecoilEngine-AppleSilicon-launcher", forHTTPHeaderField: "User-Agent")
     req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
     let cfg = URLSessionConfiguration.ephemeral
     cfg.tlsMinimumSupportedProtocolVersion = .TLSv12

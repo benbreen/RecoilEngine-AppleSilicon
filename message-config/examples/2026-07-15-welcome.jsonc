@@ -1,0 +1,17 @@
+// Simple one-off announcement shown once to everyone (frequency "once").
+{
+  "id": "welcome-2026-07",
+  "date": "2026-07-15",
+  "target": { "op": "all" },
+  "title": "Welcome to the BAR Launcher",
+  "body": [
+    "<p style='font-family:-apple-system;font-size:13px'>",
+    "Thanks for trying this unofficial macOS port. <b>Online play</b> is ",
+    "coming soon — for now, enjoy skirmish, replays and LAN.",
+    "</p>"
+  ],
+  "frequency": "once",
+  "buttons": [
+    { "label": "OK", "action": "continue", "default": true }
+  ]
+}

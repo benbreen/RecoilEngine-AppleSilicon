@@ -1,0 +1,29 @@
+# Regenerate message-config/messages.json from message-config/messages/*.jsonc
+# on every push, so authors only ever edit the small per-message files and
+# never hand-maintain the assembled file the launcher fetches. Commits the
+# result back if it changed.
+name: assemble messages.json
+on:
+  push:
+    paths: ["message-config/messages/**", "message-config/assemble.py", ".github/workflows/assemble.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: message-config
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 assemble.py
+      - name: commit if changed
+        run: |
+          if ! git diff --quiet messages.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add messages.json
+            git commit -m "assemble messages.json"
+            git push
+          fi

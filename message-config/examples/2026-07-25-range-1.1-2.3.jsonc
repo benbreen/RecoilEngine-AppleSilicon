@@ -1,0 +1,18 @@
+// Range target: shown only to versions 1.1 through 2.3 inclusive. Use
+// "minInclusive"/"maxInclusive": false to make either bound exclusive.
+{
+  "id": "range-note-1.1-2.3",
+  "date": "2026-07-25",
+  "target": { "op": "range", "min": "1.1", "max": "2.3" },
+  "title": "Heads up for this version range",
+  "body": [
+    "<p style='font-family:-apple-system;font-size:13px'>",
+    "This notice targets versions <b>1.1</b> through <b>2.3</b> inclusive.",
+    "</p>"
+  ],
+  "suppressible": true,
+  "suppressDefault": true,
+  "buttons": [
+    { "label": "Got it", "action": "continue", "default": true }
+  ]
+}

@@ -136,8 +136,10 @@ NOTICE_VERSION="1"
 CONSENT_ACK="$WRITEDIR/.consent-ack"
 NOTICE_ACK="$WRITEDIR/.notice-ack"
 MESSAGE_SEEN="$WRITEDIR/.message-seen"
-# Remote message config (announcements / kill-switch); overridable for testing.
-MESSAGE_CONFIG_URL="${BAR_MESSAGE_CONFIG_URL:-https://raw.githubusercontent.com/benbreen/recoil-apple-messages/main/messages.json}"
+# Remote message config (announcements / kill-switch). Source baked at build
+# time (release-build.sh --messages-config/--messages-local -> staged
+# .message-config-url); BAR_MESSAGE_CONFIG_URL overrides at runtime.
+MESSAGE_CONFIG_URL="${BAR_MESSAGE_CONFIG_URL:-$(cat "$RES/.message-config-url" 2>/dev/null || echo "https://raw.githubusercontent.com/benbreen/RecoilEngine-AppleSilicon/main/message-config/messages.json")}"
 PORT_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$CONTENTS/Info.plist" 2>/dev/null || echo 0)"
 
 if [ "${BAR_SKIP_CONTENT_CHECK:-0}" != "1" ]; then

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "messages": [
+    {
+      "id": "unofficial-build",
+      "date": "2026-07-19",
+      "target": {
+        "op": "all"
+      },
+      "title": "Unofficial Build",
+      "body": [
+        "<p style='font-family:-apple-system;font-size:13px'>",
+        "This is an <b>unofficial port</b> of the Recoil engine and the game ",
+        "Beyond All Reason to macOS. It is not made or supported by the Beyond ",
+        "All Reason or Recoil teams.",
+        "</p>",
+        "<p style='font-family:-apple-system;font-size:13px'>",
+        "<b>Please do not report problems with this build to the official Beyond ",
+        "All Reason bug tracker or Discord</b> \u2014 they cannot help with issues ",
+        "caused by this port.",
+        "</p>",
+        "<p style='font-family:-apple-system;font-size:13px'>",
+        "Instead, please send feedback and bug reports here:<br>",
+        "<a href='https://github.com/benbreen/RecoilEngine-AppleSilicon/issues'>",
+        "github.com/benbreen/RecoilEngine-AppleSilicon/issues</a>",
+        "</p>"
+      ],
+      "frequency": "always",
+      "buttons": [
+        {
+          "label": "Report Feedback / Bugs",
+          "action": "open-url",
+          "url": "https://github.com/benbreen/RecoilEngine-AppleSilicon/issues",
+          "then": "stay"
+        },
+        {
+          "label": "Continue",
+          "action": "continue",
+          "default": true
+        }
+      ]
+    }
+  ]
+}

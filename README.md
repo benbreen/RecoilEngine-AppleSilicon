@@ -1,9 +1,9 @@
-# recoil-apple — the Recoil engine, native on macOS (Apple Silicon)
+# RecoilEngine-AppleSilicon — the Recoil engine, native on macOS (Apple Silicon)
 
 <p align="center">
-  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><img src="https://img.shields.io/github/v/release/benbreen/recoil-apple?logo=apple&label=download&color=1793d1" alt="Latest release"></a>
+  <a href="https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest"><img src="https://img.shields.io/github/v/release/benbreen/RecoilEngine-AppleSilicon?logo=apple&label=download&color=1793d1" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple" alt="macOS · Apple Silicon">
-  <a href="https://github.com/benbreen/recoil-apple/releases"><img src="https://img.shields.io/github/downloads/benbreen/recoil-apple/total?color=44cc11" alt="Downloads"></a>
+  <a href="https://github.com/benbreen/RecoilEngine-AppleSilicon/releases"><img src="https://img.shields.io/github/downloads/benbreen/RecoilEngine-AppleSilicon/total?color=44cc11" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/license-GPL--2.0-blue" alt="License: GPL-2.0">
   <img src="https://img.shields.io/badge/built%20on-Recoil-orange" alt="Built on the Recoil engine">
 </p>
@@ -20,7 +20,7 @@ from its official content network and configures the engine to play it — full
 graphics, full online multiplayer against Windows and Linux players in the
 same lobbies.
 
-**Two downloads** on the [releases page](https://github.com/benbreen/recoil-apple/releases/latest):
+**Two downloads** on the [releases page](https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest):
 
 | Artifact | What it is | For whom |
 |---|---|---|
@@ -60,7 +60,7 @@ same lobbies.
 > [What this project did](#what-this-project-did).
 
 <p align="center">
-  <a href="https://github.com/benbreen/recoil-apple/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
+  <a href="https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest"><b>⬇&nbsp; Download for macOS (Apple Silicon)</b></a>
   &nbsp;·&nbsp; engine port + optional BAR launcher &nbsp;·&nbsp; macOS 26+
 </p>
 
@@ -145,13 +145,9 @@ build.
   with zero sync errors. Method, numbers, reproduction commands, and honest
   limits: **[SYNC_VALIDATION.md](SYNC_VALIDATION.md)**.
 
-  > **Online multiplayer is disabled in the released build** while approval to
-  > connect to Beyond All Reason's community servers is sought from the game's
-  > creators. Skirmish vs AI, replays, and local-network (LAN) games work; the
-  > online lobby opens on a sign-in screen you dismiss with **Cancel**. The sim
-  > is online-*capable* and certified above — the block is a deliberate policy
-  > choice in the launcher, not a technical limit. Builds from source can
-  > enable it (see "Building the macOS app").
+  > Online multiplayer, skirmish vs AI, replays, and local-network (LAN)
+  > games all work. This is an unofficial port: please report problems with
+  > it [here](../../issues), not to the official BAR/Recoil teams.
 - **Native performance.** A month-one optimization campaign took the heavy
   late-game scenes from single-digit to display-class frame rates at 5K with
   pixel-identical output (measured on an M2 Ultra Mac Studio, vsync on):
@@ -226,13 +222,10 @@ make release     # certified + Developer ID signed + notarized (needs
 make engine      # just the engine binary, with the sync gates
 ```
 
-**Online play is disabled by default.** Released builds ship with the online
-lobby server neutralized (it resolves to an unreachable host) while approval
-to connect to BAR's community servers is sought from the game's creators — LAN
-and local play are unaffected. To build a copy with online enabled for your
-own testing, pass `ONLINE=1` (e.g. `ONLINE=1 make app`) or
-`packaging/release-build.sh --enable-online`. Please do not distribute
-online-enabled builds until that approval is in place.
+**Online play is enabled by default.** To build a copy with the online lobby
+disabled (it then resolves to an unreachable loopback endpoint; LAN and local
+play are unaffected), pass `ONLINE=0` (e.g. `ONLINE=0 make app`) or
+`packaging/release-build.sh --disable-online`.
 
 What the build does, in order: builds the Mesa Zink+KosmicKrisp driver from
 the pinned upstream commit + `patches/mesa/` (provenance-stamped, skipped

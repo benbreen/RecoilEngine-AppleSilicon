@@ -1,0 +1,21 @@
+// Two-action announcement (the "online is live" case). Everyone sees it.
+// "Download new version" opens the releases page and quits; "Continue with old
+// version" launches the current build. Default = Download. Suppressible.
+{
+  "id": "online-live-2026-08",
+  "date": "2026-08-01",
+  "target": { "op": "all" },
+  "title": "Online play is now available",
+  "body": [
+    "<p style='font-family:-apple-system;font-size:13px'>",
+    "Good news — online multiplayer is live! Download the latest ",
+    "<b>BAR Launcher</b> to start playing online.",
+    "</p>"
+  ],
+  "suppressible": true,
+  "suppressDefault": true,
+  "buttons": [
+    { "label": "Download new version", "action": "open-url", "url": "https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest", "then": "quit", "default": true },
+    { "label": "Continue with old version", "action": "continue" }
+  ]
+}

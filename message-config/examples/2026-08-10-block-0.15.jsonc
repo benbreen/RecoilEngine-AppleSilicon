@@ -1,0 +1,21 @@
+// Kill-switch for a known-bad build (forced quit). Only the exact bad version
+// sees it. NOT suppressible, frequency "always" so it shows every launch, and
+// there is no "continue" button — the bad build cannot be launched.
+{
+  "id": "block-bad-build-0.15",
+  "date": "2026-08-10",
+  "target": { "op": "eq", "version": "0.15" },
+  "title": "This version has a serious problem",
+  "body": [
+    "<p style='font-family:-apple-system;font-size:13px'>",
+    "<span style='color:#c0392b'><b>Version 0.15 can corrupt saved settings ",
+    "and should not be used.</b></span> Please install the fixed version.",
+    "</p>"
+  ],
+  "suppressible": false,
+  "frequency": "always",
+  "buttons": [
+    { "label": "Download the fix", "action": "open-url", "url": "https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest", "then": "quit", "default": true },
+    { "label": "Quit", "action": "quit" }
+  ]
+}

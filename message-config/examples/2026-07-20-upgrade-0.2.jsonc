@@ -1,0 +1,22 @@
+// Version-targeted upgrade nudge (only versions < 0.2). Suppressible, but
+// unchecked by default so it keeps reminding until the user opts out.
+// Demonstrates a clickable link, bold and coloured text, and open-url->quit.
+{
+  "id": "upgrade-to-0.2",
+  "date": "2026-07-20",
+  "target": { "op": "lt", "version": "0.2" },
+  "title": "A newer version is available",
+  "body": [
+    "<p style='font-family:-apple-system;font-size:13px'>",
+    "Version <b>0.2</b> improves performance and fixes bugs. See the ",
+    "<a href='https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest'>latest release</a>, ",
+    "or read the <span style='color:#e2621d'>changelog</span> on the releases page.",
+    "</p>"
+  ],
+  "suppressible": true,
+  "suppressDefault": false,
+  "buttons": [
+    { "label": "Download", "action": "open-url", "url": "https://github.com/benbreen/RecoilEngine-AppleSilicon/releases/latest", "then": "quit", "default": true },
+    { "label": "Later", "action": "continue" }
+  ]
+}
