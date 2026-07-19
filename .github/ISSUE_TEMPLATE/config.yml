@@ -1,0 +1,6 @@
+# Force issue creation through the structured forms (no blank issues).
+blank_issues_enabled: false
+contact_links:
+  - name: Beyond All Reason itself (gameplay, balance, game bugs on all platforms)
+    url: https://github.com/beyond-all-reason/Beyond-All-Reason/issues
+    about: Issues with the game itself that also happen on Windows/Linux belong upstream — this tracker is only for the macOS port.

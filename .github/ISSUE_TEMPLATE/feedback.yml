@@ -1,0 +1,18 @@
+name: "Feedback / idea"
+description: "Not a bug — a suggestion, question, or general feedback about the macOS port."
+labels: ["feedback"]
+body:
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+      placeholder: "What's on your mind?"
+    validations:
+      required: true
+  - type: input
+    id: port-version
+    attributes:
+      label: Port version (if relevant)
+      placeholder: "e.g. 0.11"
+    validations:
+      required: false

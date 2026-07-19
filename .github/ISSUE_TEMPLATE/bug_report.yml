@@ -1,0 +1,68 @@
+name: "Bug report (macOS port)"
+description: "Something broke in the macOS port — crash, graphics, install, downloads, performance."
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! This tracker covers the **macOS port only**. If the
+        problem also happens on Windows/Linux, it belongs with the
+        [Beyond All Reason project](https://github.com/beyond-all-reason/Beyond-All-Reason/issues) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+      placeholder: "Started a skirmish on Supreme Isthmus, game crashed to desktop after ~5 minutes…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: infolog
+    attributes:
+      label: infolog.txt
+      description: |
+        **Required.** The engine writes this log on every run — it is usually the key to diagnosing anything.
+
+        1. In Finder press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd>, paste `~/Library/Application Support/Beyond-All-Reason-mac`, press Return.
+        2. **Drag `infolog.txt` into this box** (it uploads as an attachment), or paste its contents.
+
+        ⚠️ The log is overwritten each launch — grab it **before** starting the game again.
+      placeholder: "Drag infolog.txt here, or paste its contents."
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "e.g. macOS 26.1"
+    validations:
+      required: true
+
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model
+      placeholder: "e.g. MacBook Pro 14\" M3 Pro, 18 GB"
+    validations:
+      required: true
+
+  - type: input
+    id: port-version
+    attributes:
+      label: Port version
+      description: "BAR Launcher → right-click in Applications → Get Info, or the version in the DMG name."
+      placeholder: "e.g. 0.11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: crash-report
+    attributes:
+      label: Crash report (if the game crashed hard)
+      description: |
+        If macOS showed a crash dialog or the game vanished: Finder → <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> → `~/Library/Logs/DiagnosticReports` — drag in the newest file starting with `spring` or `BAR Launcher`.
+    validations:
+      required: false
