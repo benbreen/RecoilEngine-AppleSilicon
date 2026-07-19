@@ -73,6 +73,14 @@ the build workflow builds and a separate workflow validates.
 mirrors the first-run consent dialog and the README caution; if one changes,
 change all three.
 
+**Every release must also review `message-config/messages/`.** Live messages
+are fetched by every existing install and are version-targeted; a release that
+changes behavior can make a live message wrong (e.g. when online play is
+enabled, the "online disabled" messaging must be capped so it does not target
+the new version — `"target": {"op": "le", "version": "<last-disabled>"}`).
+Propose the concrete message changes and get the maintainer's explicit
+sign-off before publishing the release.
+
 ## What to upstream (keep the layer shrinking)
 
 `docs/UPSTREAM_CANDIDATES.md` tracks the fixes that belong upstream (LuaVAO
