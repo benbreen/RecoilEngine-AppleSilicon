@@ -195,8 +195,14 @@ return {
 	},
 }
 BYAREOF
-  # the non-potato first-launch defaults BAR would otherwise have applied
-  for kv in "Water = 4" "MaxParticles = 12000" "CamMode = 3"; do
+  # the non-potato first-launch defaults BAR would otherwise have applied.
+  # CamMode is 2 (Spring), not the 3 BAR writes: BAR's block sets CamMode 3
+  # and then sends "viewspring", so the session runs the Spring camera and its
+  # "Camera Remember" widget persists mode 2 from then on. We cannot send the
+  # command, and seeding 3 alone left every Mac install on Rotatable Overhead
+  # for good: middle-drag rotates instead of panning, the wheel zooms in
+  # place instead of toward the cursor (issue #13).
+  for kv in "Water = 4" "MaxParticles = 12000" "CamMode = 2"; do
     key="${kv%% =*}"
     grep -q "^$key " "$CFG" 2>/dev/null || echo "$kv" >> "$CFG"
   done

@@ -151,6 +151,10 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib/assimp/include) #FIXME: hack
 # vendored, version-matched copy and break the build (newer simdjson trips an
 # AppleClang macro collision). Prepend so <simdjson.h> always resolves here.
 include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/lib/simdjson/include)
+# Same for <fmt/*.h>: a Homebrew fmt (e.g. pulled in by node or ccache) is
+# newer than the vendored libfmt.a the engine links, and headless TUs compiled
+# against its headers reference fmt::detail::allocate, which libfmt.a lacks.
+include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/lib/fmt/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib/fastgltf/include)
 
 ### Add headers for generated project files (e.g. Code::Blocks)

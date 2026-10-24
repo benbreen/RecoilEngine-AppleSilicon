@@ -4,6 +4,13 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <IOSurface/IOSurface.h>
 #import <CoreGraphics/CoreGraphics.h>  // CGColorSpaceCreateWithName (perf-pin colorspace)
+// spring-headless compiles this file but never presents and does not link
+// MetalFX; the upscaler exists only in the GUI build.
+#if !defined(HEADLESS)
+#define MAC_HAVE_METALFX 1
+#import <MetalFX/MetalFX.h>
+#endif
+#include <atomic>
 
 #include "MetalPresent.h"
 #include <vector>
@@ -54,6 +61,111 @@ static struct { void* base; size_t len; id<MTLBuffer> buf; } g_pbWraps[PB_WRAP_M
 static int                        g_pbWrapCount     = 0;
 static id<MTLRenderPipelineState> g_pbPSO           = nil; // non-flipped
 static id<MTLRenderPipelineState> g_pbPSO_flip      = nil;
+
+// MetalFX spatial upscale (MacUpscaler=1): used when the engine renders below
+// the drawable size (MacRenderScale < 1). The scaler cannot flip, so it writes
+// an unflipped upscaled frame into g_fxOut and the regular flip PSO then
+// copies that 1:1 onto the drawable. Everything below g_fxMode is touched only
+// on g_presentQueue (serial), so it needs no locking.
+static std::atomic<int>           g_fxMode{0};       // 0 = stretch, 1 = MetalFX
+#ifdef MAC_HAVE_METALFX
+static id<MTLFXSpatialScaler>     g_fxScaler   = nil;
+static id<MTLTexture>             g_fxIn       = nil; // staging for the buffer path
+static id<MTLTexture>             g_fxOut      = nil;
+static int                        g_fxInW = 0, g_fxInH = 0, g_fxOutW = 0, g_fxOutH = 0;
+static MTLPixelFormat             g_fxFmt      = MTLPixelFormatInvalid;
+static bool                       g_fxBroken   = false; // creation failed: stop retrying
+#endif
+
+extern "C" void MacMetalPresent_SetUpscaler(int mode)
+{
+    g_fxMode.store(mode, std::memory_order_relaxed);
+}
+
+#ifdef MAC_HAVE_METALFX
+static void ReleaseFx()
+{
+    [g_fxScaler release]; g_fxScaler = nil;
+    [g_fxIn release];     g_fxIn     = nil;
+    [g_fxOut release];    g_fxOut    = nil;
+    g_fxInW = g_fxInH = g_fxOutW = g_fxOutH = 0;
+    g_fxFmt = MTLPixelFormatInvalid;
+}
+
+// Returns true when a MetalFX upscale from inW x inH to outW x outH should be
+// encoded this frame (scaler + g_fxOut + g_fxIn ready). Present queue only.
+static bool EnsureFx(int inW, int inH, MTLPixelFormat fmt, int outW, int outH)
+{
+    if (g_fxMode.load(std::memory_order_relaxed) != 1 || g_fxBroken)
+        return false;
+    // MetalFX spatial only upscales; at 1:1 (MacRenderScale=1) it is pure cost
+    if (inW <= 0 || inH <= 0 || inW >= outW || inH >= outH)
+        return false;
+    if (g_fxScaler != nil && inW == g_fxInW && inH == g_fxInH &&
+        outW == g_fxOutW && outH == g_fxOutH && fmt == g_fxFmt)
+        return true;
+
+    ReleaseFx();
+    if (![MTLFXSpatialScalerDescriptor supportsDevice:g_device]) {
+        fprintf(stderr, "[MetalPresent] MetalFX spatial scaler not supported on this device; using plain stretch\n");
+        g_fxBroken = true;
+        return false;
+    }
+
+    MTLFXSpatialScalerDescriptor* d = [[MTLFXSpatialScalerDescriptor alloc] init];
+    d.inputWidth          = (NSUInteger)inW;
+    d.inputHeight         = (NSUInteger)inH;
+    d.outputWidth         = (NSUInteger)outW;
+    d.outputHeight        = (NSUInteger)outH;
+    d.colorTextureFormat  = fmt;
+    d.outputTextureFormat = fmt;
+    // engine output is 8-bit sRGB-encoded (never linear)
+    d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+    g_fxScaler = [d newSpatialScalerWithDevice:g_device];
+    [d release];
+    if (g_fxScaler == nil) {
+        fprintf(stderr, "[MetalPresent] MetalFX scaler creation failed (%dx%d -> %dx%d); using plain stretch\n",
+                inW, inH, outW, outH);
+        g_fxBroken = true;
+        return false;
+    }
+
+    MTLTextureDescriptor* td =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:(NSUInteger)outW
+                                                          height:(NSUInteger)outH mipmapped:NO];
+    td.storageMode = MTLStorageModePrivate;
+    td.usage       = g_fxScaler.outputTextureUsage | MTLTextureUsageShaderRead;
+    g_fxOut = [g_device newTextureWithDescriptor:td];
+
+    MTLTextureDescriptor* inDesc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:(NSUInteger)inW
+                                                          height:(NSUInteger)inH mipmapped:NO];
+    inDesc.storageMode = MTLStorageModePrivate;
+    inDesc.usage       = g_fxScaler.colorTextureUsage | MTLTextureUsageShaderRead;
+    g_fxIn = [g_device newTextureWithDescriptor:inDesc];
+
+    if (g_fxOut == nil || g_fxIn == nil) {
+        fprintf(stderr, "[MetalPresent] MetalFX texture allocation failed; using plain stretch\n");
+        ReleaseFx();
+        g_fxBroken = true;
+        return false;
+    }
+    g_fxInW = inW; g_fxInH = inH; g_fxOutW = outW; g_fxOutH = outH; g_fxFmt = fmt;
+    fprintf(stderr, "[MetalPresent] MetalFX spatial upscale active: %dx%d -> %dx%d\n", inW, inH, outW, outH);
+    return true;
+}
+
+// Encode the upscale of `src` (inW x inH, already in g_fxIn's format) into
+// g_fxOut. `src` may be g_fxIn itself.
+static void EncodeFx(id<MTLCommandBuffer> cb, id<MTLTexture> src)
+{
+    g_fxScaler.colorTexture       = src;
+    g_fxScaler.outputTexture      = g_fxOut;
+    g_fxScaler.inputContentWidth  = (NSUInteger)g_fxInW;
+    g_fxScaler.inputContentHeight = (NSUInteger)g_fxInH;
+    [g_fxScaler encodeToCommandBuffer:cb];
+}
+#endif
 
 // Fullscreen-triangle vertex+fragment shader. Two PSOs (flipped + non-flipped)
 // keep the per-frame Y-flip choice branch-free in the GPU shader.
@@ -517,9 +629,25 @@ void MacMetalPresent_PresentIOSurface(bool flipY)
         rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
 
         id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+        id<MTLTexture> presentTex = tex;
+#ifdef MAC_HAVE_METALFX
+        if (EnsureFx((int)tex.width, (int)tex.height, tex.pixelFormat,
+                     (int)drawable.texture.width, (int)drawable.texture.height)) {
+            id<MTLTexture> fxSrc = tex;
+            if ((tex.usage & g_fxScaler.colorTextureUsage) != g_fxScaler.colorTextureUsage) {
+                // IOSurface texture lacks a usage MetalFX wants: copy first
+                id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+                [blit copyFromTexture:tex toTexture:g_fxIn];
+                [blit endEncoding];
+                fxSrc = g_fxIn;
+            }
+            EncodeFx(cb, fxSrc);
+            presentTex = g_fxOut;
+        }
+#endif
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
         [enc setRenderPipelineState:pso];
-        [enc setFragmentTexture:tex atIndex:0];
+        [enc setFragmentTexture:presentTex atIndex:0];
         [enc setFragmentSamplerState:g_linearSampler atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [enc endEncoding];
@@ -657,12 +785,41 @@ bool MacMetalPresent_PresentPixelBuffer(void* base, size_t len, int w, int h,
         rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
 
         id<MTLCommandBuffer> cb = [g_queue commandBuffer];
-        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
-        [enc setRenderPipelineState:pso];
-        [enc setFragmentBuffer:buf offset:0 atIndex:0];
-        [enc setFragmentBytes:&bufSrc length:sizeof(bufSrc) atIndex:1];
-        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-        [enc endEncoding];
+#ifdef MAC_HAVE_METALFX
+        // MetalFX needs a texture: one GPU blit of the packed rows into
+        // g_fxIn (the texture format absorbs the RGBA/BGRA order), upscale,
+        // then present g_fxOut through the texture PSO (same flip semantics).
+        const MTLPixelFormat fxFmt = srcRGBA ? MTLPixelFormatRGBA8Unorm : MTLPixelFormatBGRA8Unorm;
+        if (EnsureFx(w, h, fxFmt, (int)drawable.texture.width, (int)drawable.texture.height)) {
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            [blit copyFromBuffer:buf
+                    sourceOffset:0
+               sourceBytesPerRow:(NSUInteger)w * 4
+             sourceBytesPerImage:(NSUInteger)w * h * 4
+                      sourceSize:MTLSizeMake((NSUInteger)w, (NSUInteger)h, 1)
+                       toTexture:g_fxIn
+                destinationSlice:0
+                destinationLevel:0
+               destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blit endEncoding];
+            EncodeFx(cb, g_fxIn);
+
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
+            [enc setRenderPipelineState:(flipY ? g_presentPSO_flip : g_presentPSO)];
+            [enc setFragmentTexture:g_fxOut atIndex:0];
+            [enc setFragmentSamplerState:g_linearSampler atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [enc endEncoding];
+        } else
+#endif
+        {
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
+            [enc setRenderPipelineState:pso];
+            [enc setFragmentBuffer:buf offset:0 atIndex:0];
+            [enc setFragmentBytes:&bufSrc length:sizeof(bufSrc) atIndex:1];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [enc endEncoding];
+        }
         [cb presentDrawable:drawable];
         [cb addCompletedHandler:^(id<MTLCommandBuffer> _Nonnull c) {
             dispatch_semaphore_signal(g_presentBudget);

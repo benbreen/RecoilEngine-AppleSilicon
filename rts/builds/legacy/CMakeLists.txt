@@ -104,7 +104,9 @@ if (APPLE)
 	find_library(APPKIT_LIBRARY AppKit)
 	find_library(COREGRAPHICS_LIBRARY CoreGraphics)
 	find_library(IOKIT_LIBRARY IOKit)
-	list(APPEND engineLibraries ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOSURFACE_LIBRARY} ${APPKIT_LIBRARY} ${COREGRAPHICS_LIBRARY} ${IOKIT_LIBRARY})
+	# MetalFX: spatial upscaler for MacRenderScale < 1 (MetalPresent.mm)
+	find_library(METALFX_LIBRARY MetalFX)
+	list(APPEND engineLibraries ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${IOSURFACE_LIBRARY} ${APPKIT_LIBRARY} ${COREGRAPHICS_LIBRARY} ${IOKIT_LIBRARY} ${METALFX_LIBRARY})
 	set(SPRING_MAC_LIBEGL "" CACHE FILEPATH
 		"Optional path to a Mesa libEGL.dylib (e.g. a Zink+KosmicKrisp build). \
 Leave empty to link only against Apple's OpenGL.framework.")

@@ -25,6 +25,11 @@ extern "C" {
 // fast path).
 void MacMetalPresent_SetSourceRGBA(int rgba);
 
+// Upscaler used when the rendered frame is smaller than the drawable:
+// 0 = plain stretch, 1 = MetalFX spatial scaler (falls back to 0 when
+// MetalFX is unavailable). Safe to call at any time from the main thread.
+void MacMetalPresent_SetUpscaler(int mode);
+
 // caMetalLayer: the CAMetalLayer* already attached to the SDL window's NSView
 // (the same pointer GetNSViewFromSDLWindow returns). Returns true on success.
 bool MacMetalPresent_Init(void* caMetalLayer);

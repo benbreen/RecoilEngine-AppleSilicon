@@ -57,6 +57,7 @@ liblcms2*.dylib	Little-CMS2 (DevIL dep)	MIT	Text shipped (image-codecs collectio
 libjasper*.dylib	JasPer (DevIL dep)	JasPer-2.0 (MIT-style)	Text shipped (image-codecs collection)
 liblzma*.dylib	xz liblzma (libtiff dep)	0BSD	Text shipped (image-codecs collection)
 libintl*.dylib	gettext runtime (fontconfig dep)	LGPL-2.1	DYNAMIC link only; text shipped; relink rights in NOTICE
+libbrotli*.dylib	brotli (freetype dep; Google)	MIT	Text shipped (MIT collection)
 progress-window	BAR macOS port (first-run progress UI)	GPL-2.0-or-later	Part of this project; source in packaging/
 error-dialog	BAR macOS port (error dialog UI)	GPL-2.0-or-later	Part of this project; source in packaging/
 consent-dialog	BAR macOS port (first-run consent UI)	GPL-2.0-or-later	Part of this project; source in packaging/

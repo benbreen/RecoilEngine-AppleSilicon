@@ -325,7 +325,21 @@ if [ "$PROFILE" = "bar" ]; then
   # from the canonical dist_cfg the official launcher uses; the launcher deploys
   # these at runtime (see launcher.sh). Without chobby_config.json the lobby
   # black-screens (game=generic -> Chobby shuts down).
-  python3 "$PKG/extract-launcher-config.py" "$BAR/chobby/dist_cfg/config.json" "$RESOURCES" \
+  # A local BYAR-Chobby checkout at $BAR/chobby wins; otherwise fetch the one
+  # file from the commit pinned in ship-config.sh (a fresh clone has no chobby/).
+  DIST_CFG="$BAR/chobby/dist_cfg/config.json"
+  if [ ! -f "$DIST_CFG" ]; then
+    DIST_CFG="$BAR/deps/chobby-dist_cfg-$SHIP_CHOBBY_COMMIT.json"
+    if [ ! -s "$DIST_CFG" ]; then
+      mkdir -p "$BAR/deps"
+      curl -fsSL --retry 3 -o "$DIST_CFG.tmp" \
+        "https://raw.githubusercontent.com/beyond-all-reason/BYAR-Chobby/$SHIP_CHOBBY_COMMIT/dist_cfg/config.json" \
+        && mv "$DIST_CFG.tmp" "$DIST_CFG" \
+        || { rm -f "$DIST_CFG.tmp"; echo "FATAL: could not fetch BYAR-Chobby dist_cfg @ $SHIP_CHOBBY_COMMIT"; exit 1; }
+    fi
+    echo "dist_cfg: BYAR-Chobby @ $SHIP_CHOBBY_COMMIT"
+  fi
+  python3 "$PKG/extract-launcher-config.py" "$DIST_CFG" "$RESOURCES" \
     || { echo "FATAL: could not extract BAR launcher config from dist_cfg"; exit 1; }
   # BAR_CONTENT_TAGS: DIAGNOSTIC ONLY. Overrides the rapid tags the bundle
   # downloads (normally byar:test + byar-chobby:test, i.e. exactly what the
@@ -527,7 +541,9 @@ echo "debug symbol tables stripped from bundled Mach-Os"
 # the text section by default and silently misses debug-map paths (LESSON-41).
 PATHLEAK_FAIL=0
 while IFS= read -r m; do
-  hits="$(LC_ALL=C grep -a -o '/Users/[^ "]\{0,120\}' "$m" 2>/dev/null | sort -u || true)"
+  # LC_ALL=C on sort too, or a UTF-8 locale makes it abort on raw bytes
+  # ("Illegal byte sequence") and the audit silently passes
+  hits="$(LC_ALL=C grep -a -o '/Users/[^ "]\{0,120\}' "$m" 2>/dev/null | LC_ALL=C sort -u || true)"
   if [ -n "$hits" ]; then
     echo "FATAL: ${m#"$APP"/} embeds $(echo "$hits" | wc -l | tr -d ' ') builder path(s):"
     echo "$hits" | head -5 | sed 's/^/    /'
@@ -647,7 +663,7 @@ mkdir -p "$RESOURCES/LICENSES"
 cp "$SRC/COPYING" "$RESOURCES/"
 cp "$PKG/NOTICE" "$RESOURCES/"
 cp "$PKG/LICENSES/MANIFEST.tsv" "$RESOURCES/LICENSES/"
-"$PKG/collect-licenses.sh" "$RESOURCES/LICENSES" || { echo "FATAL: license collection failed"; exit 1; }
+ENGINE_SRC="$SRC" "$PKG/collect-licenses.sh" "$RESOURCES/LICENSES" || { echo "FATAL: license collection failed"; exit 1; }
 cp "$RESOURCES/LICENSES/"*.txt "$PKG/LICENSES/" 2>/dev/null || true
 "$PKG/license-audit.sh" "$APP"
 
@@ -776,8 +792,11 @@ elif [ "$REPLAY_SMOKE" = "1" ]; then
   SMOKELOG=$(mktemp)
   SMOKEDIR=$(mktemp -d)
   mkdir -p "$SMOKEDIR/rapid"   # skip the first-run lobby download
+  # stock macOS has no timeout(1); Homebrew coreutils provides gtimeout
+  TIMEOUT_BIN=$(command -v timeout || command -v gtimeout) \
+    || { echo "FATAL: neither timeout nor gtimeout found (brew install coreutils)"; exit 1; }
   BAR_WRITEDIR_OVERRIDE="$SMOKEDIR" BAR_CONTENT_SCOPE=lobby BAR_ASSUME_CONSENT=1 \
-    timeout 90 "$APP/Contents/MacOS/launcher" \
+    "$TIMEOUT_BIN" 90 "$APP/Contents/MacOS/launcher" \
     > "$SMOKELOG" 2>&1 || true
   if grep -q "KOSMICKRISP_LOADED" "$SMOKELOG" "$SMOKEDIR/infolog.txt" 2>/dev/null; then
     echo "bundle GUI smoke: KosmicKrisp identity verified"

@@ -71,10 +71,12 @@ fi
 
 echo "=== [1/4] Homebrew dependencies ==="
 # Engine deps + Mesa build deps. Individually so one failure doesn't kill the rest.
+# cmake/ninja: SPIRV-LLVM-Translator below and the engine build. gcc@15:
+# gcc-dbl64-swap.sh. coreutils: gtimeout for build-engine.sh's libm gate.
 for pkg in sdl2 libpng libjpeg-turbo libogg libvorbis freetype glm libomp \
            vulkan-headers vulkan-loader molten-vk devil ccache \
            meson pkg-config bison flex llvm@19 libclc glslang spirv-tools \
-           p7zip openal-soft minizip; do
+           p7zip openal-soft minizip cmake ninja gcc@15 coreutils; do
   brew list "$pkg" &>/dev/null || brew install "$pkg" || echo "WARN: brew install $pkg failed"
 done
 
@@ -97,6 +99,12 @@ if [ ! -f "$DEPS/spirv-xlat-install/lib/pkgconfig/LLVMSPIRVLib.pc" ]; then
 fi
 test -f "$DEPS/spirv-xlat-install/lib/pkgconfig/LLVMSPIRVLib.pc" || { echo "FATAL: spirv-xlat install missing"; exit 1; }
 echo "spirv-xlat OK"
+
+# libclc for the pinned Mesa: Homebrew's libclc 23+ no longer ships libclc.pc
+# or the spirv*-mesa3d- targets; build-libclc.sh builds LLVM 19's libclc when
+# needed and prints its pkg-config dir (empty when Homebrew's still works).
+CLC_PC="$("$BAR/scripts/build-libclc.sh")"
+[ -n "$CLC_PC" ] && echo "libclc: $CLC_PC" || echo "libclc: Homebrew"
 
 echo "=== [3/4] Mesa 26.2-devel (zink + kosmickrisp) @ $MESA_COMMIT + $NPATCH patches ==="
 if [ ! -d "$MESA_SRC/.git" ]; then
@@ -166,7 +174,7 @@ STAGE="$DEPS/mesa-stage"
 
 rm -rf build-native "$STAGE"
 meson setup build-native --native-file "$DEPS/plain-native.ini" \
-  --pkg-config-path "$DEPS/spirv-xlat-install/lib/pkgconfig" \
+  --pkg-config-path "$DEPS/spirv-xlat-install/lib/pkgconfig${CLC_PC:+,$CLC_PC}" \
   -Dprefix="$NEUTRAL_PREFIX" -Dplatforms=macos \
   -Degl-native-platform=surfaceless -Degl=enabled -Dglx=disabled \
   -Dgallium-drivers=zink -Dvulkan-drivers=kosmickrisp \
@@ -222,7 +230,12 @@ ls "$MESA_PREFIX/share/vulkan/icd.d/" 2>/dev/null || true
 # silently misses debug-map/symbol-table paths.
 leaks=0
 for d in "$MESA_PREFIX"/lib/*.dylib; do
-  hits="$(LC_ALL=C grep -a -o '/Users/[^ "]\{0,120\}' "$d" 2>/dev/null | sort -u || true)"
+  # LC_ALL=C on sort too: in a UTF-8 locale sort aborts on the raw bytes grep
+  # captures ("Illegal byte sequence") and the scan silently sees nothing.
+  # Skip "$MESA_PREFIX/lib/..." strings: those are the install names repointed
+  # above, which release-build.sh rewrites to @rpath and audits in the bundle.
+  hits="$(LC_ALL=C grep -a -o '/Users/[^ "]\{0,120\}' "$d" 2>/dev/null | LC_ALL=C sort -u \
+          | LC_ALL=C grep -v -F "$MESA_PREFIX/lib/" || true)"
   [ -z "$hits" ] || { n=$(echo "$hits" | wc -l | tr -d ' '); echo "FATAL: $(basename "$d") embeds $n /Users/ path(s):"; echo "$hits" | head -5 | sed 's/^/    /'; leaks=$((leaks+n)); }
 done
 [ "$leaks" -eq 0 ] || { echo "FATAL: driver embeds $leaks builder-path string(s) — see LESSON-41"; exit 1; }

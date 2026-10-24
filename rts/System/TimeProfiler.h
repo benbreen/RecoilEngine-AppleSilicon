@@ -123,6 +123,9 @@ public:
 		float3 stats;
 		float3 color;
 
+		// longest single call since the last CollectHitchTimers (ms)
+		float hitchMaxMs = 0.0f;
+
 		bool newPeak = false;
 		bool newLagPeak = false;
 		bool showGraph = false;
@@ -189,6 +192,13 @@ public:
 
 	void SetEnabled(bool b) { enabled = b; }
 	void PrintProfilingInfo() const;
+
+	// Hitch attribution (SPRING_HITCH_LOG): the timers whose longest single
+	// call since the previous collection reached minMs, longest first, as
+	// "name=12.3 name=4.5 ...", at most maxCount of them. Resets every timer's
+	// per-collection maximum, so calling it once per draw frame gives that
+	// frame's breakdown. Only enabled timers record outside of specials.
+	std::string CollectHitchTimers(float minMs, size_t maxCount);
 
 	void AddTime(
 		unsigned nameHash,

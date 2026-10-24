@@ -92,7 +92,28 @@ if [ -f "$BUILD/CMakeCache.txt" ]; then
   fi
 fi
 
+# Real SDL2 when Homebrew's sdl2 is the sdl2-compat (SDL3) shim; see
+# build-sdl2.sh. Empty when Homebrew still provides a real SDL2.
+SDL2_PREFIX="$("$BAR/scripts/build-sdl2.sh")"
+CMAKE_EXTRA=()
+[ -n "$SDL2_PREFIX" ] && CMAKE_EXTRA+=(-DCMAKE_PREFIX_PATH="$SDL2_PREFIX") && echo "SDL2: $SDL2_PREFIX"
+
+# VERSION-TAG GUARD. ConfigureVersion.cmake derives the reported engine version
+# (which must match the autohosts) from the nearest numeric release tag. A clone
+# of this port's GitHub repo carries none of Recoil's release tags, so cmake dies
+# deep in configure with "Invalid version format: <sha> main". Fail here instead,
+# with the fix.
+if [ -d "$SRC/.git" ] || [ -f "$SRC/.git" ]; then
+  if ! git -C "$SRC" describe --tags --abbrev=0 --match '[0-9]*' >/dev/null 2>&1; then
+    echo "FATAL: no Recoil release tag (e.g. 2026.07.04) reachable from HEAD in $SRC."
+    echo "  This port's repo does not carry upstream tags. Fetch them once:"
+    echo "  git -C \"$SRC\" fetch --no-recurse-submodules https://github.com/beyond-all-reason/RecoilEngine.git 'refs/tags/*:refs/tags/*'"
+    exit 1
+  fi
+fi
+
 cmake --fresh -S "$SRC" -B "$BUILD" -G Ninja \
+  ${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"} \
   -DCMAKE_BUILD_TYPE=RELWITHDEBINFO \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O3 -g -DNDEBUG $PREFIX_MAP" \
@@ -182,8 +203,11 @@ if true; then
     ${SHIM[@]+"${SHIM[@]}"} \
     "$BUILD/rts/lib/streflop/libstreflop.a" -o "$BUILD/dfp-verify"
   # bounded: a libm infinite loop (see the w_exp landmine above) must FAIL
-  # the gate, not hang the build
-  timeout 120 "$BUILD/dfp-verify" > "$BUILD/dfp-verify.txt" \
+  # the gate, not hang the build. Stock macOS has no timeout(1); Homebrew
+  # coreutils (installed by build-mesa-kk.sh) provides it as gtimeout.
+  TIMEOUT_BIN=$(command -v timeout || command -v gtimeout) \
+    || { echo "FATAL: neither timeout nor gtimeout found (brew install coreutils)"; exit 1; }
+  "$TIMEOUT_BIN" 120 "$BUILD/dfp-verify" > "$BUILD/dfp-verify.txt" \
     || { echo "FATAL: dfp-verify crashed or hung (libm landmine?)"; exit 1; }
   if ! diff -q "$BUILD/dfp-verify.txt" "$REF" >/dev/null; then
     echo "FATAL: streflop archive does not match $LANE lane libm hashes ($REF):"

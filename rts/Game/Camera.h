@@ -8,6 +8,7 @@
 #include "System/float3.h"
 #include "System/float4.h"
 #include "System/Matrix44f.h"
+#include "System/Misc/SpringTime.h"
 
 
 class CCamera {
@@ -205,7 +206,7 @@ public:
 
 	float3 GetMoveVectorFromState(bool fromKeyState) const;
 
-	void SetMovState(int idx, bool b) { movState[idx] = b; }
+	void SetMovState(int idx, bool b);
 	void SetRotState(int idx, bool b) { rotState[idx] = b; }
 	const bool* GetMovState() const { return movState; }
 	const bool* GetRotState() const { return rotState; }
@@ -287,6 +288,11 @@ public:
 	float edgeMoveWidth;
 	int useInterpolate;
 	bool edgeMoveDynamic;
+
+	// arrow-key speed-up while held (CameraMoveHoldAccel/MaxMult)
+	float moveHoldAccel = 0.0f;
+	float moveHoldMaxMult = 1.0f;
+	spring_time keyMoveHoldStart;
 
 private:
 	CMatrix44f projectionMatrix;

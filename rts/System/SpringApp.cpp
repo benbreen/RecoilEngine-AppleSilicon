@@ -1163,9 +1163,9 @@ bool SpringApp::MainEventHandler(const SDL_Event& event)
 					// cycle. SDL_SetWindowGrab early-returns when the grab state is
 					// unchanged, so a plain re-assert would NOT re-clip — toggle it
 					// off then on to force SDL to re-confine to the current rect.
-					// Only in borderless-fullscreen; windowed resizes are never
-					// confined.
-					if (globalRendering->borderless || globalRendering->fullScreen) {
+					// Windowed resizes are confined only with MacGrabWindowed.
+					if (globalRendering->borderless || globalRendering->fullScreen ||
+					    configHandler->GetBool("MacGrabWindowed")) {
 						globalRendering->SetWindowInputGrabbing(false);
 						globalRendering->SetWindowInputGrabbing(true);
 						LOG("[SpringApp::%s][macgrab-reclip] re-confined cursor to new size wsx=%d wsy=%d",
@@ -1224,9 +1224,10 @@ bool SpringApp::MainEventHandler(const SDL_Event& event)
 					// Re-confine the cursor when returning to a borderless-fullscreen
 					// window: FOCUS_LOST released the grab on cmd-tab, and without
 					// re-asserting it here edge-scroll toward an adjacent display
-					// would break after the first app switch. Windowed mode (neither
-					// borderless nor fullScreen) is never confined.
-					if (globalRendering->borderless || globalRendering->fullScreen)
+					// would break after the first app switch. Windowed mode is
+					// confined too when MacGrabWindowed is set.
+					if (globalRendering->borderless || globalRendering->fullScreen ||
+					    configHandler->GetBool("MacGrabWindowed"))
 						globalRendering->SetWindowInputGrabbing(true);
 
 					// Also re-assert cursor visibility; see the ENTER case below.

@@ -87,6 +87,7 @@ CONFIG(int, MinimizeOnFocusLoss).defaultValue(0).minimumValue(0).maximumValue(1)
 // the safer default while fullscreen mode transitions are macOS's weakest
 // window-server path.
 CONFIG(bool, Fullscreen).defaultValue(false).headlessValue(false).description("Sets whether the game will run in fullscreen, as opposed to a window. For Windowed Fullscreen of Borderless Window, set this to 0, WindowBorderless to 1, and WindowPosX and WindowPosY to 0.");
+CONFIG(bool, MacGrabWindowed).defaultValue(false).description("macOS: also keep the cursor inside the game window in windowed mode (borderless/fullscreen are always confined). Off by default: a plain window is where players expect to reach the rest of the desktop. Released on cmd-tab, restored on focus; /grabinput toggles it in-game.");
 CONFIG(bool, WindowBorderless).defaultValue(false).description("When set and Fullscreen is 0, will put the game in Borderless Window mode, also known as Windowed Fullscreen. When using this, it is generally best to also set WindowPosX and WindowPosY to 0");
 CONFIG(bool, BlockCompositing).defaultValue(false).safemodeValue(true).description("Disables kwin compositing to fix tearing, possible fixes low FPS in windowed mode, too.");
 // setting this as default 0 for now is because if the frame were to be dropped for being late, DWMFlush will force the compositor to use the framebuffer. This can result in blocking until the framebuffer can be composited (up to 1 frame) and may not be desirable for all use cases (specifically with vsync set to off). However, only more widespread testing and investigation across various hardware/os configs would tell us what advantage DWMFlush would bring.
@@ -804,15 +805,39 @@ void CGlobalRendering::SwapBuffers(bool allowSwapBuffers, bool clearErrors)
 	// backend collapses these structurally-identical lines into periodic
 	// "repeated N more time(s)" rollups (no ad-hoc throttle needed here).
 	// Disable with SPRING_NO_STALL_LOG=1.
+	//
+	// Hitch attribution: SPRING_HITCH_LOG=<ms> (support/debug escape hatch, off
+	// by default) turns the profiler on and, for every frame longer than <ms>
+	// (default 50 when the value is not a number), logs which profiler timers
+	// took the longest single call during that frame, e.g. "Sim::GameFrame=61.2
+	// Lua::Callins::Synced=40.3 Misc::SwapBuffers=12.0". Visible stutters on
+	// Apple-class hardware are mostly 50-150ms, below the stall threshold, and
+	// the stall line alone cannot say whether sim, Lua, draw or present ate the
+	// time. Nested timers both appear (parent includes child).
 	{
 		static const bool s_stallLog = (getenv("SPRING_NO_STALL_LOG") == nullptr);
+		static const float s_hitchMs = [] {
+			const char* v = getenv("SPRING_HITCH_LOG");
+			if (v == nullptr)
+				return 0.0f;
+
+			const float ms = static_cast<float>(atof(v));
+			CTimeProfiler::GetInstance().SetEnabled(true);
+			return (ms > 1.0f) ? ms : 50.0f;
+		}();
 		const spring_time nowST = spring_now();
-		if (s_stallLog && lastSwapBuffersEnd.toMilliSecsi() > 0) {
+		if (lastSwapBuffersEnd.toMilliSecsi() > 0) {
 			const float gapMs = (nowST - lastSwapBuffersEnd).toMilliSecsf();
-			if (gapMs > 150.0f) {
+			if (s_stallLog && gapMs > 150.0f) {
 				static uint32_t s_stallCount = 0;
 				++s_stallCount;
 				LOG_L(L_WARNING, "[stall] draw gap %.0fms (drawFrame=%u, stalls=%u)", gapMs, drawFrame, s_stallCount);
+			}
+			if (s_hitchMs > 0.0f) {
+				// collect every frame so the next one starts from zero
+				const std::string timers = CTimeProfiler::GetInstance().CollectHitchTimers(s_hitchMs * 0.2f, 8);
+				if (gapMs > s_hitchMs)
+					LOG_L(L_WARNING, "[hitch] frame %.0fms (drawFrame=%u): %s", gapMs, drawFrame, timers.c_str());
 			}
 		}
 	}
@@ -1706,9 +1731,11 @@ void CGlobalRendering::SetWindowAttributes(SDL_Window* window)
 	// grab is released automatically on focus loss, so cmd-tab still frees the
 	// cursor; it is re-asserted on focus regain (see SpringApp). Windowed and the
 	// visreg fixed window are never confined.
-	SetWindowInputGrabbing(macWantFullscreen);
+	// MacGrabWindowed extends the confinement to plain windowed mode.
+	const bool macWantGrab = macWantFullscreen || (!macFixedWindow && configHandler->GetBool("MacGrabWindowed"));
+	SetWindowInputGrabbing(macWantGrab);
 	LOG("[GR::%s][macgrab] cursor confinement want=%d got=%d", __func__,
-	    int(macWantFullscreen), int(GetWindowInputGrabbing()));
+	    int(macWantGrab), int(GetWindowInputGrabbing()));
 #endif
 }
 

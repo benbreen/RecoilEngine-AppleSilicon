@@ -1,0 +1,9 @@
+atan2  1c70e42733c9daa7
+sin    57020e6cf71e994f
+cos    2d7cde46d809b5f1
+tan    873bce4dfdff3f52
+floor  cf61b71e20344099
+fmod   b8b631f989577881
+sqrtlog 9789c099c2d943da
+asinacos 501964456d608bbb
+expatan 85e7216318d84225

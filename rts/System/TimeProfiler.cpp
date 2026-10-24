@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdio>
 #include <cstring>
 
 #include "System/TimeProfiler.h"
@@ -410,6 +411,7 @@ void CTimeProfiler::AddTimeRaw(
 
 	p.newLagPeak = (p.stats.x > 0.0f && deltaTime.toMilliSecsf() > p.stats.x);
 	p.stats.x    = std::max(p.stats.x, deltaTime.toMilliSecsf());
+	p.hitchMaxMs = std::max(p.hitchMaxMs, deltaTime.toMilliSecsf());
 
 	if (pi != profiles.end()) {
 		// profile already exists, add dt
@@ -423,6 +425,37 @@ void CTimeProfiler::AddTimeRaw(
 
 		resortProfiles += 1;
 	}
+}
+
+std::string CTimeProfiler::CollectHitchTimers(float minMs, size_t maxCount)
+{
+	std::vector<std::pair<float, unsigned>> hits;
+
+	{
+		std::lock_guard<ProfileMutexType> lock(profileMutex);
+
+		for (auto& [nameHash, rec]: profiles) {
+			if (rec.hitchMaxMs >= minMs)
+				hits.emplace_back(rec.hitchMaxMs, nameHash);
+
+			rec.hitchMaxMs = 0.0f;
+		}
+	}
+
+	std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return (a.first > b.first); });
+	hits.resize(std::min(hits.size(), maxCount));
+
+	std::string out;
+	std::lock_guard<HashNamMutexType> lock(hashToNameMutex);
+
+	for (const auto& [ms, nameHash]: hits) {
+		const auto iter = hashToName.find(nameHash);
+		char buf[128];
+		snprintf(buf, sizeof(buf), "%s%s=%.1f", out.empty() ? "" : " ", (iter != hashToName.end()) ? iter->second.c_str() : "?", ms);
+		out += buf;
+	}
+
+	return out;
 }
 
 void CTimeProfiler::PrintProfilingInfo() const

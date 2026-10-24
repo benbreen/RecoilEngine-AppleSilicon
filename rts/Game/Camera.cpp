@@ -32,6 +32,14 @@ CONFIG(float, CameraMoveSlowMult)
 	.defaultValue(0.1f)
 	.maximumValue(1.0f)
 	.description("The multiplier applied to speed when camera is in moveslow state.");
+CONFIG(float, CameraMoveHoldAccel)
+	.defaultValue(0.0f)
+	.minimumValue(0.0f)
+	.description("Arrow-key camera scrolling speeds up the longer the keys are held: +this fraction of the base speed per second held, up to CameraMoveHoldMaxMult. 0 = constant speed.");
+CONFIG(float, CameraMoveHoldMaxMult)
+	.defaultValue(4.0f)
+	.minimumValue(1.0f)
+	.description("Cap on the CameraMoveHoldAccel speed-up, as a multiple of the base arrow-key speed.");
 CONFIG(int, CamFrameTimeCorrection)
     .defaultValue(0)
 	.minimumValue(0)
@@ -66,7 +74,7 @@ void CCamera::SetCamType(uint32_t ct)
 
 void CCamera::InitConfigNotify(){
 	RECOIL_DETAILED_TRACY_ZONE;
-	configHandler->NotifyOnChange(this, {"CameraMoveFastMult", "CameraMoveSlowMult", "CamFrameTimeCorrection", "EdgeMoveDynamic", "EdgeMoveWidth"});
+	configHandler->NotifyOnChange(this, {"CameraMoveFastMult", "CameraMoveSlowMult", "CamFrameTimeCorrection", "EdgeMoveDynamic", "EdgeMoveWidth", "CameraMoveHoldAccel", "CameraMoveHoldMaxMult"});
 	ConfigUpdate();
 }
 
@@ -84,6 +92,8 @@ void CCamera::ConfigUpdate()
 	useInterpolate = configHandler->GetInt("CamFrameTimeCorrection");
 	edgeMoveDynamic = configHandler->GetBool("EdgeMoveDynamic");
 	edgeMoveWidth = configHandler->GetFloat("EdgeMoveWidth");
+	moveHoldAccel = configHandler->GetFloat("CameraMoveHoldAccel");
+	moveHoldMaxMult = configHandler->GetFloat("CameraMoveHoldMaxMult");
 }
 
 void CCamera::ConfigNotify(const std::string & key, const std::string & value)
@@ -709,6 +719,21 @@ void CCamera::ClipFrustumLines(const float zmin, const float zmax, bool neg)
 }
 
 
+void CCamera::SetMovState(int idx, bool b)
+{
+	const auto keyMoveHeld = [this]() {
+		return (movState[MOVE_STATE_FWD] || movState[MOVE_STATE_BCK] || movState[MOVE_STATE_LFT] || movState[MOVE_STATE_RGT]);
+	};
+	const bool wasHeld = keyMoveHeld();
+
+	movState[idx] = b;
+
+	// the hold clock starts when the first direction key goes down and keeps
+	// running while any of them stays down (e.g. changing direction mid-scroll)
+	if (!wasHeld && keyMoveHeld())
+		keyMoveHoldStart = spring_gettime();
+}
+
 float3 CCamera::GetMoveVectorFromState(bool fromKeyState) const
 {
 	RECOIL_DETAILED_TRACY_ZONE;
@@ -729,6 +754,13 @@ float3 CCamera::GetMoveVectorFromState(bool fromKeyState) const
 		v.y -= (camDeltaTime * 0.001f * movState[MOVE_STATE_BCK]);
 		v.x += (camDeltaTime * 0.001f * movState[MOVE_STATE_RGT]);
 		v.x -= (camDeltaTime * 0.001f * movState[MOVE_STATE_LFT]);
+
+		if (moveHoldAccel > 0.0f) {
+			const float heldSecs = (spring_gettime() - keyMoveHoldStart).toSecsf();
+			const float holdMult = std::min(1.0f + moveHoldAccel * heldSecs, moveHoldMaxMult);
+			v.x *= holdMult;
+			v.y *= holdMult;
+		}
 
 		return v;
 	}

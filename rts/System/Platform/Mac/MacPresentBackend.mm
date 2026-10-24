@@ -31,6 +31,7 @@
 #include "System/Config/ConfigHandler.h"
 #include "System/Log/ILog.h"
 #include "System/Misc/SpringTime.h"
+#include "System/TimeProfiler.h"
 
 // SPRING_MAC_DIAGNOSTICS compiles in the heavier macOS diagnostics (headless
 // frame capture, per-frame present timing, raw-frame dumps, the present
@@ -43,6 +44,8 @@
 #endif
 
 CONFIG(int, MacPresentDirect).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: present shader reads the readback ring directly from unified memory (0 = IOSurface staging path). Runtime-changeable so perf A/B legs can share one seeked process.");
+CONFIG(float, MacRenderScale).defaultValue(1.0f).minimumValue(0.5f).maximumValue(1.0f).description("macOS: fraction of the window's pixel resolution the game renders at (0.5-1.0). Below 1.0 the frame is upscaled to the window at present time (see MacUpscaler). Lower = faster readback and rendering. Applied at startup and on window resize.");
+CONFIG(int, MacUpscaler).defaultValue(1).minimumValue(0).maximumValue(1).description("macOS: how a frame rendered below window resolution is upscaled. 0 = plain stretch, 1 = MetalFX spatial upscaler (falls back to plain stretch if unavailable). Runtime-changeable.");
 
 // A truly zero-copy present (render the engine FBO directly into the
 // IOSurface that Metal samples — no readback at all) is blocked on Mesa
@@ -100,8 +103,27 @@ bool PerfPinnedRenderSize(int& w, int& h)
 // harness relies on for phased A/B legs).
 std::atomic<int> presentDirect = {1};
 
+// MacUpscaler as configured, and whether the current render size was derived
+// with MacRenderScale < 1 (set by EffectiveBackingScale). MetalFX is engaged
+// only for a user-requested render scale: frames that are smaller than the
+// drawable for other reasons (SPRING_MAC_NO_RETINA, the hardware caps in
+// HardwareBackingScale) keep upstream's plain stretch, so MacRenderScale=1
+// presents exactly as before.
+std::atomic<int>  upscalerCfg  = {1};
+std::atomic<bool> renderScaled = {false};
+
+void ApplyUpscaler()
+{
+	MacMetalPresent_SetUpscaler(renderScaled.load(std::memory_order_relaxed) ? upscalerCfg.load(std::memory_order_relaxed) : 0);
+}
+
 struct PresentDirectObserver {
-	void ConfigNotify(const std::string& /*key*/, const std::string& value) {
+	void ConfigNotify(const std::string& key, const std::string& value) {
+		if (key == "MacUpscaler") {
+			upscalerCfg.store(atoi(value.c_str()), std::memory_order_relaxed);
+			ApplyUpscaler();
+			return;
+		}
 		presentDirect.store(atoi(value.c_str()), std::memory_order_relaxed);
 	}
 };
@@ -508,7 +530,9 @@ bool CreateContext(SDL_Window* window)
 	// thread from ConfigHandler::Update, so mid-run flips still apply).
 	if (configHandler != nullptr) {
 		presentDirect.store(configHandler->GetInt("MacPresentDirect"), std::memory_order_relaxed);
-		configHandler->NotifyOnChange(&presentDirectObserver, {"MacPresentDirect"});
+		upscalerCfg.store(configHandler->GetInt("MacUpscaler"), std::memory_order_relaxed);
+		ApplyUpscaler();
+		configHandler->NotifyOnChange(&presentDirectObserver, {"MacPresentDirect", "MacUpscaler"});
 	}
 
 	// Set up the manual present path now that the layer + context exist.
@@ -594,7 +618,32 @@ void GetDrawableSize(int& w, int& h)
 //   SPRING_MAC_NO_RETINA=1    force 1x rendering (strongest, pre-existing)
 //   SPRING_MAC_FULL_BACKING=1 disable both caps (raw backing scale, i.e.
 //                             deliberate supersampling on scaled desktops)
+static double HardwareBackingScale(SDL_Window* window);
+
+// MacRenderScale: user-chosen fraction of the hardware-derived resolution.
+// The Metal present pass upscales the smaller frame to the drawable (MetalFX
+// spatial when MacUpscaler=1), and every pixel not rendered is also a pixel
+// not read back — the readback is the dominant per-frame cost on this port.
 double EffectiveBackingScale(SDL_Window* window)
+{
+	const double hw = HardwareBackingScale(window);
+	if (configHandler == nullptr)
+		return hw;
+
+	const double rs = std::clamp(double(configHandler->GetFloat("MacRenderScale")), 0.5, 1.0);
+	renderScaled.store(rs < 1.0, std::memory_order_relaxed);
+	ApplyUpscaler();
+	if (rs < 1.0) {
+		static double loggedRs = -1.0;
+		if (std::fabs(rs - loggedRs) > 1e-3) {
+			loggedRs = rs;
+			LOG("[EGL] MacRenderScale %.2f -> render scale %.3f (hardware %.3f)", rs, hw * rs, hw);
+		}
+	}
+	return hw * rs;
+}
+
+static double HardwareBackingScale(SDL_Window* window)
 {
 	if (getenv("SPRING_MAC_NO_RETINA") != nullptr)
 		return 1.0;
@@ -1054,10 +1103,16 @@ bool DirectPresentFrame(int rdW, int rdH, GLenum readFormat, int lagFrames)
 		return false;
 	}
 
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	// Sub-timers of Misc::SwapBuffers: they record only while the profiler is
+	// on (/debug, or SPRING_HITCH_LOG), and let a [hitch] line say whether a
+	// slow swap was the pack, the GPU-behind wait, or the Metal present.
 	const int cur = (int)(dpFrame % DP_RING);
-	glBindBuffer(GL_PIXEL_PACK_BUFFER, dpPBO[cur]);
-	glReadPixels(0, 0, rdW, rdH, readFormat, GL_UNSIGNED_BYTE, nullptr);
+	{
+		SCOPED_TIMER("Misc::SwapBuffers::MacPack");
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, dpPBO[cur]);
+		glReadPixels(0, 0, rdW, rdH, readFormat, GL_UNSIGNED_BYTE, nullptr);
+	}
 	// a silently-failing pack presents stale frames (the async-copy flicker
 	// class); packing into a PERSISTENT map is legal, but verify early on
 	if (dpFrame < 100) {
@@ -1085,34 +1140,39 @@ bool DirectPresentFrame(int rdW, int rdH, GLenum readFormat, int lagFrames)
 		// stale glass. Smoothness is the product, so the wait stays; the
 		// copy removal is still a win everywhere the GPU keeps up.
 		int old = (int)((dpFrame - lagFrames) % DP_RING);
-		if (dpFence[old] != nullptr &&
-		    glClientWaitSync(dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 0) == GL_TIMEOUT_EXPIRED) {
-			static uint64_t fenceWaits = 0;
-			++fenceWaits;
-			// L_INFO, not L_WARNING: this fires whenever the GPU render can't keep
-			// the frame budget (a normal perf symptom on a heavy scene, not an
-			// error). At L_WARNING it spammed the on-screen console; keep it in the
-			// log (rate-limited to powers of two) for perf diagnosis only.
-			if ((fenceWaits & (fenceWaits - 1)) == 0) // log 1,2,4,8,...
-				LOG_L(L_INFO, "[MacPresent] lag-%d pack fence not signaled — waiting (GPU behind, x%llu)",
-				        lagFrames, (unsigned long long)fenceWaits);
-			if (glClientWaitSync(dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull) == GL_TIMEOUT_EXPIRED) {
-				// pathological (>100ms): use the newest COMPLETED older slot
-				// instead of reading a buffer mid-write; skip if none
-				old = -1;
-				for (int k = lagFrames + 1; k <= (int)std::min<long>(dpFrame, DP_RING - 2); ++k) {
-					const int cand = (int)((dpFrame - k) % DP_RING);
-					if (dpFence[cand] == nullptr ||
-					    glClientWaitSync(dpFence[cand], GL_SYNC_FLUSH_COMMANDS_BIT, 0) != GL_TIMEOUT_EXPIRED) {
-						old = cand;
-						break;
+		{
+			SCOPED_TIMER("Misc::SwapBuffers::MacFenceWait");
+			if (dpFence[old] != nullptr &&
+			    glClientWaitSync(dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 0) == GL_TIMEOUT_EXPIRED) {
+				static uint64_t fenceWaits = 0;
+				++fenceWaits;
+				// L_INFO, not L_WARNING: this fires whenever the GPU render can't keep
+				// the frame budget (a normal perf symptom on a heavy scene, not an
+				// error). At L_WARNING it spammed the on-screen console; keep it in the
+				// log (rate-limited to powers of two) for perf diagnosis only.
+				if ((fenceWaits & (fenceWaits - 1)) == 0) // log 1,2,4,8,...
+					LOG_L(L_INFO, "[MacPresent] lag-%d pack fence not signaled — waiting (GPU behind, x%llu)",
+					        lagFrames, (unsigned long long)fenceWaits);
+				if (glClientWaitSync(dpFence[old], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull) == GL_TIMEOUT_EXPIRED) {
+					// pathological (>100ms): use the newest COMPLETED older slot
+					// instead of reading a buffer mid-write; skip if none
+					old = -1;
+					for (int k = lagFrames + 1; k <= (int)std::min<long>(dpFrame, DP_RING - 2); ++k) {
+						const int cand = (int)((dpFrame - k) % DP_RING);
+						if (dpFence[cand] == nullptr ||
+						    glClientWaitSync(dpFence[cand], GL_SYNC_FLUSH_COMMANDS_BIT, 0) != GL_TIMEOUT_EXPIRED) {
+							old = cand;
+							break;
+						}
 					}
 				}
 			}
 		}
-		if (old >= 0)
+		if (old >= 0) {
+			SCOPED_TIMER("Misc::SwapBuffers::MacMetalPresent");
 			presented = MacMetalPresent_PresentPixelBuffer(dpMap[old], dpAllocBytes, rdW, rdH,
 			                                               readFormat == GL_RGBA, true);
+		}
 	}
 	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
