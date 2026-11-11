@@ -44,7 +44,8 @@ static dispatch_semaphore_t       g_presentBudget   = nil; // max queued present
 static uint64_t                   g_presentSkips    = 0;
 static id<MTLRenderPipelineState> g_presentPSO      = nil;
 static id<MTLRenderPipelineState> g_presentPSO_flip = nil;
-static id<MTLSamplerState>        g_linearSampler   = nil;
+static id<MTLSamplerState>        g_linearSampler   = nil; // NB: nearest (1:1 presents)
+static id<MTLSamplerState>        g_filterSampler   = nil; // bilinear (frame != drawable size)
 
 // Path 3: direct pixel-buffer present. MTLBuffer wraps of the engine's
 // persistently-mapped PBO ring, cached by base address (newBufferWithBytesNoCopy
@@ -99,20 +100,55 @@ fragment float4 fs_present(VOut in [[stage_in]],
 struct BufSrc {
     uint w;
     uint h;
-    uint rgba; // 1 = bytes are R,G,B,A; 0 = B,G,R,A
+    uint rgba;   // 1 = bytes are R,G,B,A; 0 = B,G,R,A
+    uint filter; // 1 = non-integer stretch onto the drawable: bilinear, not nearest
 };
 
 fragment float4 fs_present_buf(VOut in [[stage_in]],
                                device const uchar4* px  [[buffer(0)]],
                                constant BufSrc&     src [[buffer(1)]]) {
     const float2 uvc = clamp(in.uv, 0.0, 1.0);
-    const uint x = min(uint(uvc.x * float(src.w)), src.w - 1u);
-    const uint y = min(uint(uvc.y * float(src.h)), src.h - 1u);
-    const uchar4 c = px[y * src.w + x];
-    const float4 f = float4(c) * (1.0 / 255.0);
+    float4 f;
+    if (src.filter != 0u) {
+        // The frame is being stretched onto a drawable of another size (the
+        // panel-native / GPU-budget caps on scaled desktops, NO_RETINA). A
+        // nearest pick repeats or drops whole rows and columns at a
+        // non-integer ratio, which stair-steps text; blend the four
+        // neighbours instead.
+        const float2 p  = uvc * float2(float(src.w), float(src.h)) - 0.5;
+        const float2 fl = floor(p);
+        const float2 t  = p - fl;
+        const int xm = int(src.w) - 1;
+        const int ym = int(src.h) - 1;
+        const uint x0 = uint(clamp(int(fl.x),     0, xm));
+        const uint x1 = uint(clamp(int(fl.x) + 1, 0, xm));
+        const uint y0 = uint(clamp(int(fl.y),     0, ym));
+        const uint y1 = uint(clamp(int(fl.y) + 1, 0, ym));
+        const float4 c00 = float4(px[y0 * src.w + x0]);
+        const float4 c10 = float4(px[y0 * src.w + x1]);
+        const float4 c01 = float4(px[y1 * src.w + x0]);
+        const float4 c11 = float4(px[y1 * src.w + x1]);
+        f = mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y) * (1.0 / 255.0);
+    } else {
+        // 1:1 — exact texel, bit-identical to the pre-filter path
+        const uint x = min(uint(uvc.x * float(src.w)), src.w - 1u);
+        const uint y = min(uint(uvc.y * float(src.h)), src.h - 1u);
+        f = float4(px[y * src.w + x]) * (1.0 / 255.0);
+    }
     return (src.rgba != 0u) ? float4(f.rgb, f.a) : float4(f.b, f.g, f.r, f.a);
 }
 )";
+
+// True when presenting a srcW x srcH frame onto a dstW x dstH drawable needs
+// filtering: a non-integer stretch. 1:1 and exact integer multiples (2x under
+// SPRING_MAC_NO_RETINA on a plain 2x display) map every source pixel onto a
+// whole block of drawable pixels, so the nearest pick is exact and is kept.
+static bool PresentNeedsFilter(NSUInteger srcW, NSUInteger srcH, NSUInteger dstW, NSUInteger dstH)
+{
+    if (srcW == 0 || srcH == 0)
+        return false;
+    return ((dstW % srcW) != 0 || (dstH % srcH) != 0 || (dstW / srcW) != (dstH / srcH));
+}
 
 static bool BuildPresentPipelines()
 {
@@ -176,8 +212,13 @@ static bool BuildPresentPipelines()
     sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
     sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
     g_linearSampler = [g_device newSamplerStateWithDescriptor:sd];
+    // Used only when the frame is stretched onto a drawable of another size;
+    // 1:1 presents keep the nearest sampler above (bit-identical output).
+    sd.minFilter = MTLSamplerMinMagFilterLinear;
+    sd.magFilter = MTLSamplerMinMagFilterLinear;
+    g_filterSampler = [g_device newSamplerStateWithDescriptor:sd];
 
-    return (g_presentPSO != nil && g_presentPSO_flip != nil && g_linearSampler != nil);
+    return (g_presentPSO != nil && g_presentPSO_flip != nil && g_linearSampler != nil && g_filterSampler != nil);
 }
 
 // Benchmark pin, parsed once. Perf-test only — see the block in
@@ -520,7 +561,8 @@ void MacMetalPresent_PresentIOSurface(bool flipY)
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
         [enc setRenderPipelineState:pso];
         [enc setFragmentTexture:tex atIndex:0];
-        [enc setFragmentSamplerState:g_linearSampler atIndex:0];
+        const bool stretched = PresentNeedsFilter(tex.width, tex.height, drawable.texture.width, drawable.texture.height);
+        [enc setFragmentSamplerState:(stretched ? g_filterSampler : g_linearSampler) atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [enc endEncoding];
         [cb presentDrawable:drawable];
@@ -627,7 +669,8 @@ bool MacMetalPresent_PresentPixelBuffer(void* base, size_t len, int w, int h,
         return true; // frame dropped by policy, not a path failure
     }
 
-    struct { uint32_t w, h, rgba; } bufSrc = { (uint32_t)w, (uint32_t)h, srcRGBA ? 1u : 0u };
+    struct BufSrcArgs { uint32_t w, h, rgba, filter; };
+    const BufSrcArgs bufSrc = { (uint32_t)w, (uint32_t)h, srcRGBA ? 1u : 0u, 0u };
     id<MTLRenderPipelineState> pso = flipY ? g_pbPSO_flip : g_pbPSO;
     dispatch_async(g_presentQueue, ^{
         id<CAMetalDrawable> drawable = [g_layer nextDrawable];
@@ -660,7 +703,9 @@ bool MacMetalPresent_PresentPixelBuffer(void* base, size_t len, int w, int h,
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
         [enc setRenderPipelineState:pso];
         [enc setFragmentBuffer:buf offset:0 atIndex:0];
-        [enc setFragmentBytes:&bufSrc length:sizeof(bufSrc) atIndex:1];
+        BufSrcArgs args = bufSrc;
+        args.filter = PresentNeedsFilter(args.w, args.h, drawable.texture.width, drawable.texture.height) ? 1u : 0u;
+        [enc setFragmentBytes:&args length:sizeof(args) atIndex:1];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [enc endEncoding];
         [cb presentDrawable:drawable];
