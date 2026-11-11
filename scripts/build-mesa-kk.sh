@@ -74,7 +74,7 @@ echo "=== [1/4] Homebrew dependencies ==="
 for pkg in sdl2 libpng libjpeg-turbo libogg libvorbis freetype glm libomp \
            vulkan-headers vulkan-loader molten-vk devil ccache \
            meson pkg-config bison flex llvm@19 libclc glslang spirv-tools \
-           p7zip openal-soft minizip; do
+           p7zip openal-soft minizip fontconfig; do
   brew list "$pkg" &>/dev/null || brew install "$pkg" || echo "WARN: brew install $pkg failed"
 done
 
