@@ -3,7 +3,7 @@ title = "Release 2026.07"
 aliases = ['/changelogs/changelog-2026-07']
 +++
 
-This is the changelog since version 2025.07 until **version 2025.07.01**, which was released on 2026-07-29.
+This is the changelog since version 2025.06 until **version 2025.07.04**, which was released on 2026-08-04.
 
 ## Caveats
 - removed Java bindings for Skirmish AI.
@@ -114,3 +114,5 @@ Added a bunch of `debug.emulateFoo` functions that emulate input. Useful for aut
 - fix unitsync not running functions passed to `Spring.TimeCheck`.
 - fix Skirmish AI API compilation issues due to `AIFloat3` having a non-trivial constructor.
 - attempt to fix the lack of `wupget:GameProgress` calls when initially catching up.
+- fix Lua `VBO::CopyTo` to copy VBO data CPU side in additon to GPU side. Formerly it only copied data GPU side.
+- fix QTPFS path cleanup when an immediate path search fails

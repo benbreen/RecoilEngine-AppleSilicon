@@ -1,5 +1,6 @@
 /* This file is part of the Spring engine (GPL v2 or later), see LICENSE.html */
 
+#include "System/RangesCompat.h"
 #include "UnitDef.h"
 #include "Unit.h"
 #include "UnitHandler.h"
@@ -53,6 +54,9 @@
 #include "Sim/MoveTypes/MoveType.h"
 #include "Sim/MoveTypes/MoveTypeFactory.h"
 #include "Sim/MoveTypes/ScriptMoveType.h"
+#include "Rendering/Env/NanoParticles/NanoParticleConfig.h"
+#include "Rendering/Env/NanoParticles/NanoParticleEmitter.h"
+#include "Rendering/Env/NanoParticles/NanoParticleSystem.h"
 #include "Sim/Projectiles/FlareProjectile.h"
 #include "Sim/Projectiles/ProjectileMemPool.h"
 #include "Sim/Projectiles/WeaponProjectiles/MissileProjectile.h"
@@ -2094,9 +2098,17 @@ bool CUnit::AddBuildPower(CUnit* builder, float amount)
 			return false;
 		}
 
+		const bool trackReclaimBurst = NanoParticles::GetConfig().reclaimBurst && NanoParticles::system.Enabled();
+
+		if (trackReclaimBurst)
+			NanoParticles::emitter.RecordReclaimContributor(this, builder);
+
 		// turn reclaimee into nanoframe (even living units)
 		if (modInfo.reclaimUnitMethod == 0)
 			TurnIntoNanoframe();
+
+		// captured before buildProgress is overwritten below
+		const float reclaimBurstMetal = trackReclaimBurst ? cost.metal * buildProgress : 0.0f;
 
 		// reduce health & resources
 		health = postHealth;
@@ -2104,6 +2116,9 @@ bool CUnit::AddBuildPower(CUnit* builder, float amount)
 
 		// reclaim finished?
 		if (killMe || buildProgress <= 0.0f || health <= 0.0f) {
+			if (trackReclaimBurst)
+				NanoParticles::emitter.EmitReclaimBurst(this, builder, reclaimBurstMetal);
+
 			health = 0.0f;
 			buildProgress = 0.0f;
 			KillUnit(builder, false, true, -CSolidObject::DAMAGE_RECLAIMED);
@@ -2135,92 +2150,6 @@ bool CUnit::AllowedReclaim(CUnit* builder) const
 	return true;
 }
 
-
-bool CUnit::UseMetal(float metal)
-{
-	RECOIL_DETAILED_TRACY_ZONE;
-	if (metal < 0.0f) {
-		AddMetal(-metal);
-		return true;
-	}
-
-	CTeam* myTeam = teamHandler.Team(team);
-	myTeam->resPull.metal += metal;
-
-	if (myTeam->UseMetal(metal)) {
-		resourcesUseI.metal += metal;
-		return true;
-	}
-
-	return false;
-}
-
-void CUnit::AddMetal(float metal, bool useIncomeMultiplier)
-{
-	RECOIL_DETAILED_TRACY_ZONE;
-	if (metal < 0.0f) {
-		UseMetal(-metal);
-		return;
-	}
-
-	resourcesMakeI.metal += metal;
-	teamHandler.Team(team)->AddMetal(metal, useIncomeMultiplier);
-}
-
-
-bool CUnit::UseEnergy(float energy)
-{
-	RECOIL_DETAILED_TRACY_ZONE;
-	if (energy < 0.0f) {
-		AddEnergy(-energy);
-		return true;
-	}
-
-	CTeam* myTeam = teamHandler.Team(team);
-	myTeam->resPull.energy += energy;
-
-	if (myTeam->UseEnergy(energy)) {
-		resourcesUseI.energy += energy;
-		return true;
-	}
-
-	return false;
-}
-
-void CUnit::AddEnergy(float energy, bool useIncomeMultiplier)
-{
-	RECOIL_DETAILED_TRACY_ZONE;
-	if (energy < 0.0f) {
-		UseEnergy(-energy);
-		return;
-	}
-	resourcesMakeI.energy += energy;
-	teamHandler.Team(team)->AddEnergy(energy, useIncomeMultiplier);
-}
-
-
-bool CUnit::AddHarvestedMetal(float metal)
-{
-	RECOIL_DETAILED_TRACY_ZONE;
-	if (harvestStorage.metal <= 0.0f) {
-		AddMetal(metal, false);
-		return true;
-	}
-
-	if (harvested.metal >= harvestStorage.metal) {
-		eventHandler.UnitHarvestStorageFull(this);
-		return false;
-	}
-
-	//FIXME what do with exceeding metal?
-	harvested.metal = std::min(harvested.metal + metal, harvestStorage.metal);
-	if (harvested.metal >= harvestStorage.metal) {
-		eventHandler.UnitHarvestStorageFull(this);
-	}
-	return true;
-}
-
-
 void CUnit::SetStorage(const SResourcePack& newStorage)
 {
 	RECOIL_DETAILED_TRACY_ZONE;
@@ -2240,11 +2169,6 @@ bool CUnit::HaveResources(const SResourcePack& pack) const
 bool CUnit::UseResources(const SResourcePack& pack)
 {
 	RECOIL_DETAILED_TRACY_ZONE;
-	//FIXME
-	/*if (energy < 0.0f) {
-		AddEnergy(-energy);
-		return true;
-	}*/
 
 	CTeam* myTeam = teamHandler.Team(team);
 	myTeam->resPull += pack;
@@ -2260,11 +2184,6 @@ bool CUnit::UseResources(const SResourcePack& pack)
 void CUnit::AddResources(const SResourcePack& pack, bool useIncomeMultiplier)
 {
 	RECOIL_DETAILED_TRACY_ZONE;
-	//FIXME
-	/*if (energy < 0.0f) {
-		UseEnergy(-energy);
-		return true;
-	}*/
 	resourcesMakeI += pack;
 	teamHandler.Team(team)->AddResources(pack, useIncomeMultiplier);
 }
