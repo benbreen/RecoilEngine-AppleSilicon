@@ -1,0 +1,44 @@
+From 9c95a742b585d59360e391edcef88e52fb619f9e Mon Sep 17 00:00:00 2001
+From: Vandomas <vandcim@gmail.com>
+Date: Thu, 10 Sep 2026 12:56:52 +0300
+Subject: [PATCH] zink: put the buffer view cache key first
+
+equals_bufferview_key() compares a zink_bufferview_key against the start
+of the stored zink_buffer_view, but that object starts with pres, so a
+lookup never matches and every get_buffer_view() call creates another
+VkBufferView that lives as long as the resource. Move the key to the
+front, the layout zink_surface already uses, so lookups compare the
+right bytes and existing views get reused.
+
+With a texture buffer rebound between two ranges 50k times, resident
+memory grew by 103 MB before and 7 MB after on Mesa 26.2.2 with
+MoltenVK, and by 129 MB before and 40 MB after on main with KosmicKrisp,
+with identical GPU results. In a Beyond All Reason replay the driver
+created 44094 buffer views before and 12 after, reusing cached views
+40834 times. The mismatch and the fix were found by Anatolii, who also
+did the measurements.
+
+Fixes: 5cfaa6cd5fcb ("zink: use smaller keys for surface/bufferview caching and switch to sets")
+Cc: mesa-stable
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44358>
+---
+ src/gallium/drivers/zink/zink_types.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_types.h b/src/gallium/drivers/zink/zink_types.h
+index 34bcaf61d29..a3739643a17 100644
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1611,8 +1611,8 @@ struct zink_bufferview_key {
+ };
+ 
+ struct zink_buffer_view {
+-   struct pipe_resource *pres;
+    struct zink_bufferview_key key;
++   struct pipe_resource *pres;
+    VkBufferView buffer_view;
+ };
+ 
+-- 
+2.54.0 (Apple Git-157)
+
