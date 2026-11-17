@@ -611,6 +611,9 @@ void CBuilderCAI::ExecuteBuildCmd(Command& c)
 
 		// <build> is never parsed (except in PostLoad) so just copy it
 		build = bi;
+		// snap to the position the build will actually use, so the early check
+		// below tests the same footprint the rest of this function does
+		build.pos = CGameHelper::Pos2BuildPos(build, true);
 		inCommand = c.GetID();
 
 		// One-time early check: if repeating the order (or first run), skip immediately if now blocked
@@ -916,7 +919,8 @@ void CBuilderCAI::ExecuteGuard(Command& c)
 		if (pushRepairCommand) {
 			StopSlowGuard();
 
-			Command nc(CMD_REPAIR, c.GetOpts(), b->curBuild->id);
+			// Guard-generated repairs must not be copied into a repeating queue.
+			Command nc(CMD_REPAIR, c.GetOpts() | INTERNAL_ORDER, b->curBuild->id);
 
 			commandQue.push_front(nc);
 			inCommand = CMD_STOP;
@@ -935,7 +939,7 @@ void CBuilderCAI::ExecuteGuard(Command& c)
 		if (pushRepairCommand) {
 			StopSlowGuard();
 
-			commandQue.push_front(Command(CMD_REPAIR, c.GetOpts(), fac->curBuild->id));
+			commandQue.push_front(Command(CMD_REPAIR, c.GetOpts() | INTERNAL_ORDER, fac->curBuild->id));
 			inCommand = CMD_STOP;
 			// SlowUpdate();
 			return;
