@@ -123,7 +123,24 @@ for p in $(patch_list); do
   git apply --whitespace=nowarn "$p" || { echo "FATAL: patch $(basename "$p") did not apply to $MESA_COMMIT"; exit 1; }
 done
 
-python3 -m venv "$DEPS/mesa-venv"
+# Apple's /usr/bin/python3 is 3.9 and Mesa's meson requires >= 3.10. The venv
+# inherits whichever python3 creates it, and the venv is put FIRST on PATH
+# below, so a 3.9-created venv makes meson fail with "Python >= 3.10 not found"
+# even on a machine that has a newer python installed. Choose explicitly.
+MESA_VENV_PY=""
+for _v in 3.10 3.11 3.12 3.13 3.14 3.15 3.16; do
+  if command -v "python$_v" >/dev/null 2>&1; then
+    MESA_VENV_PY="$(command -v "python$_v")"; break
+  fi
+done
+test -n "$MESA_VENV_PY" || {
+  echo "FATAL: the Mesa build needs python >= 3.10 (brew install python@3.13);"
+  echo "       /usr/bin/python3 is $(python3 -V 2>&1 | awk '{print $2}')"
+  exit 1
+}
+echo "mesa: venv python $MESA_VENV_PY ($("$MESA_VENV_PY" -V 2>&1 | awk '{print $2}'))"
+rm -rf "$DEPS/mesa-venv"
+"$MESA_VENV_PY" -m venv "$DEPS/mesa-venv"
 "$DEPS/mesa-venv/bin/pip" install --quiet mako pyyaml packaging
 
 # Reproducibility: strip the absolute build-root prefix ($BAR, which
